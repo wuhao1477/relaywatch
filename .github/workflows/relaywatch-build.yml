@@ -43,18 +43,18 @@ jobs:
           SUBTARGET="${ARCH#*/}"
           BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${ARCH_DIR}/${SUBTARGET}"
           SDK_TARBALL=$(python3 - <<'PY'
-import os, sys, urllib.request
-base = os.environ["BASE_URL"]
-with urllib.request.urlopen(base + "/") as resp:
-    html = resp.read().decode()
-for token in html.split('"'):
-    if token.startswith("openwrt-sdk") and token.endswith(".tar.xz"):
-        print(token)
-        break
-else:
-    sys.exit("No SDK tarball found")
-PY
-)
+          import os, sys, urllib.request
+          base = os.environ["BASE_URL"]
+          with urllib.request.urlopen(base + "/") as resp:
+              html = resp.read().decode()
+          for token in html.split('"'):
+              if token.startswith("openwrt-sdk") and token.endswith(".tar.xz"):
+                  print(token)
+                  break
+          else:
+              sys.exit("No SDK tarball found")
+          PY
+          )
           if [ -z "$SDK_TARBALL" ]; then
             echo "SDK tarball not located under ${BASE_URL}" >&2
             exit 1
