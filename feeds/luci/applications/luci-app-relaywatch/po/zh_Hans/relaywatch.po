@@ -1,0 +1,229 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_Hans\n"
+
+msgid "Applies ubus renew on the STA interface once a new uplink is established."
+msgstr "在建立新的上级链路后，对 STA 接口执行 ubus renew。"
+
+msgid "BSSID"
+msgstr "BSSID"
+
+msgid "BSSID (optional)"
+msgstr "BSSID（可选）"
+
+msgid "Backhaul Candidates"
+msgstr "回程候选"
+
+msgid "Blacklist"
+msgstr "黑名单"
+
+msgid "Blacklist Time (s)"
+msgstr "黑名单时长（秒）"
+
+msgid "Candidate Networks"
+msgstr "候选网络"
+
+msgid "Candidates"
+msgstr "候选"
+
+msgid "Channel"
+msgstr "信道"
+
+msgid "Check Interval (s)"
+msgstr "检测周期（秒）"
+
+msgid "Comma-separated IPv4/URL targets used for health checks."
+msgstr "用于健康检测的 IPv4/URL 目标，使用逗号分隔。"
+
+msgid "Comma-separated methods such as ping,http."
+msgstr "检测方式，可用逗号分隔（例如 ping,http）。"
+
+msgid "Configure watchdog policies and relayd-aware health checks."
+msgstr "配置看门狗策略及 relayd 感知的健康检测。"
+
+msgid "Current BSSID"
+msgstr "当前 BSSID"
+
+msgid "Current SSID"
+msgstr "当前 SSID"
+
+msgid "Current State"
+msgstr "当前状态"
+
+msgid "Daemon & Policy"
+msgstr "守护进程与策略"
+
+msgid "Disabled"
+msgstr "禁用"
+
+msgid "Enable relaywatchd daemon"
+msgstr "启用 relaywatchd 守护进程"
+
+msgid "Encryption"
+msgstr "加密方式"
+
+msgid "Expires"
+msgstr "到期时间"
+
+msgid "Failed to scan for nearby networks."
+msgstr "扫描附近网络失败。"
+
+msgid "Failure Count"
+msgstr "连续失败次数"
+
+msgid "Failure Threshold"
+msgstr "失败阈值"
+
+msgid "Health Check Method"
+msgstr "健康检测方式"
+
+msgid "Health Check Targets"
+msgstr "健康检测目标"
+
+msgid "Health check failed"
+msgstr "健康检测失败"
+
+msgid "Health check succeeded"
+msgstr "健康检测成功"
+
+msgid "Higher values will be preferred during failover."
+msgstr "数值越大，在故障切换时优先级越高。"
+
+msgid "Key"
+msgstr "密钥"
+
+msgid "LAN Bridge"
+msgstr "LAN 桥"
+
+msgid "Last Event"
+msgstr "最近事件"
+
+msgid "Last Message"
+msgstr "最近消息"
+
+msgid "Last Switch"
+msgstr "最近切换"
+
+msgid "Manage the relay backhaul candidates and their priorities."
+msgstr "管理中继回程候选及其优先级。"
+
+msgid "Never"
+msgstr "从未"
+
+msgid "No"
+msgstr "否"
+
+msgid "No entries"
+msgstr "暂无条目"
+
+msgid "None (open)"
+msgstr "开放（无加密）"
+
+msgid "Not available"
+msgstr "不可用"
+
+msgid "Password / Key"
+msgstr "密码 / 密钥"
+
+msgid "Please provide a target SSID or section name."
+msgstr "请填写目标 SSID 或配置段名称。"
+
+msgid "Priority"
+msgstr "优先级"
+
+msgid "Reason"
+msgstr "原因"
+
+msgid "Recent Log"
+msgstr "近期日志"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Relay Watch"
+msgstr "Relay Watch"
+
+msgid "Relay Watch Status"
+msgstr "Relay Watch 状态"
+
+msgid "Relayd Instance"
+msgstr "relayd 实例"
+
+msgid "Renew DHCP After Switch"
+msgstr "切换后更新 DHCP"
+
+msgid "SSID"
+msgstr "SSID"
+
+msgid "STA Interface Section"
+msgstr "STA 接口段"
+
+msgid "Scan Nearby Networks"
+msgstr "扫描附近网络"
+
+msgid "Scan Results"
+msgstr "扫描结果"
+
+msgid "Scan complete."
+msgstr "扫描完成。"
+
+msgid "Service Enabled"
+msgstr "服务是否启用"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Signal"
+msgstr "信号"
+
+msgid "State file is not available yet. Start the daemon to populate runtime data."
+msgstr "尚无状态文件，请启动守护进程以生成运行时数据。"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Status Actions"
+msgstr "状态操作"
+
+msgid "Switch"
+msgstr "切换"
+
+msgid "Switch Cooldown (s)"
+msgstr "切换冷却（秒）"
+
+msgid "Switch Token (SSID or section)"
+msgstr "切换标识（SSID 或段名）"
+
+msgid "Switch request failed."
+msgstr "切换请求失败。"
+
+msgid "Switch request queued."
+msgstr "切换请求已提交。"
+
+msgid "Trigger Immediate Check"
+msgstr "立即执行检测"
+
+msgid "Updated At"
+msgstr "更新时间"
+
+msgid "WEP"
+msgstr "WEP"
+
+msgid "WPA-PSK"
+msgstr "WPA-PSK"
+
+msgid "WPA/WPA2 Mixed"
+msgstr "WPA/WPA2 混合"
+
+msgid "WPA2-PSK"
+msgstr "WPA2-PSK"
+
+msgid "WPA2/WPA3 Mixed"
+msgstr "WPA2/WPA3 混合"
+
+msgid "WPA3-SAE"
+msgstr "WPA3-SAE"
+
+msgid "Yes"
+msgstr "是"

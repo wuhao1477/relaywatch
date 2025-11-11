@@ -1,0 +1,18 @@
+config relaywatch 'global'
+	option enabled '0'
+	option iface 'wwan'
+	option lan_bridge 'br-lan'
+	option relayd_instance 'bridge'
+	option check_method 'ping'
+	option check_target '1.1.1.1,8.8.8.8'
+	option check_interval '30'
+	option fail_threshold '3'
+	option switch_cooldown '120'
+	option blacklist_time '600'
+	option dhcp_renew '1'
+
+config candidate
+	option ssid 'Home_AP'
+	option encryption 'psk2'
+	option key 'password'
+	option priority '100'

@@ -1,0 +1,229 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: en\n"
+
+msgid "Applies ubus renew on the STA interface once a new uplink is established."
+msgstr "Applies ubus renew on the STA interface once a new uplink is established."
+
+msgid "BSSID"
+msgstr "BSSID"
+
+msgid "BSSID (optional)"
+msgstr "BSSID (optional)"
+
+msgid "Backhaul Candidates"
+msgstr "Backhaul Candidates"
+
+msgid "Blacklist"
+msgstr "Blacklist"
+
+msgid "Blacklist Time (s)"
+msgstr "Blacklist Time (s)"
+
+msgid "Candidate Networks"
+msgstr "Candidate Networks"
+
+msgid "Candidates"
+msgstr "Candidates"
+
+msgid "Channel"
+msgstr "Channel"
+
+msgid "Check Interval (s)"
+msgstr "Check Interval (s)"
+
+msgid "Comma-separated IPv4/URL targets used for health checks."
+msgstr "Comma-separated IPv4/URL targets used for health checks."
+
+msgid "Comma-separated methods such as ping,http."
+msgstr "Comma-separated methods such as ping,http."
+
+msgid "Configure watchdog policies and relayd-aware health checks."
+msgstr "Configure watchdog policies and relayd-aware health checks."
+
+msgid "Current BSSID"
+msgstr "Current BSSID"
+
+msgid "Current SSID"
+msgstr "Current SSID"
+
+msgid "Current State"
+msgstr "Current State"
+
+msgid "Daemon & Policy"
+msgstr "Daemon & Policy"
+
+msgid "Disabled"
+msgstr "Disabled"
+
+msgid "Enable relaywatchd daemon"
+msgstr "Enable relaywatchd daemon"
+
+msgid "Encryption"
+msgstr "Encryption"
+
+msgid "Expires"
+msgstr "Expires"
+
+msgid "Failed to scan for nearby networks."
+msgstr "Failed to scan for nearby networks."
+
+msgid "Failure Count"
+msgstr "Failure Count"
+
+msgid "Failure Threshold"
+msgstr "Failure Threshold"
+
+msgid "Health Check Method"
+msgstr "Health Check Method"
+
+msgid "Health Check Targets"
+msgstr "Health Check Targets"
+
+msgid "Health check failed"
+msgstr "Health check failed"
+
+msgid "Health check succeeded"
+msgstr "Health check succeeded"
+
+msgid "Higher values will be preferred during failover."
+msgstr "Higher values will be preferred during failover."
+
+msgid "Key"
+msgstr "Key"
+
+msgid "LAN Bridge"
+msgstr "LAN Bridge"
+
+msgid "Last Event"
+msgstr "Last Event"
+
+msgid "Last Message"
+msgstr "Last Message"
+
+msgid "Last Switch"
+msgstr "Last Switch"
+
+msgid "Manage the relay backhaul candidates and their priorities."
+msgstr "Manage the relay backhaul candidates and their priorities."
+
+msgid "Never"
+msgstr "Never"
+
+msgid "No"
+msgstr "No"
+
+msgid "No entries"
+msgstr "No entries"
+
+msgid "None (open)"
+msgstr "None (open)"
+
+msgid "Not available"
+msgstr "Not available"
+
+msgid "Password / Key"
+msgstr "Password / Key"
+
+msgid "Please provide a target SSID or section name."
+msgstr "Please provide a target SSID or section name."
+
+msgid "Priority"
+msgstr "Priority"
+
+msgid "Reason"
+msgstr "Reason"
+
+msgid "Recent Log"
+msgstr "Recent Log"
+
+msgid "Refresh"
+msgstr "Refresh"
+
+msgid "Relay Watch"
+msgstr "Relay Watch"
+
+msgid "Relay Watch Status"
+msgstr "Relay Watch Status"
+
+msgid "Relayd Instance"
+msgstr "Relayd Instance"
+
+msgid "Renew DHCP After Switch"
+msgstr "Renew DHCP After Switch"
+
+msgid "SSID"
+msgstr "SSID"
+
+msgid "STA Interface Section"
+msgstr "STA Interface Section"
+
+msgid "Scan Nearby Networks"
+msgstr "Scan Nearby Networks"
+
+msgid "Scan Results"
+msgstr "Scan Results"
+
+msgid "Scan complete."
+msgstr "Scan complete."
+
+msgid "Service Enabled"
+msgstr "Service Enabled"
+
+msgid "Settings"
+msgstr "Settings"
+
+msgid "Signal"
+msgstr "Signal"
+
+msgid "State file is not available yet. Start the daemon to populate runtime data."
+msgstr "State file is not available yet. Start the daemon to populate runtime data."
+
+msgid "Status"
+msgstr "Status"
+
+msgid "Status Actions"
+msgstr "Status Actions"
+
+msgid "Switch"
+msgstr "Switch"
+
+msgid "Switch Cooldown (s)"
+msgstr "Switch Cooldown (s)"
+
+msgid "Switch Token (SSID or section)"
+msgstr "Switch Token (SSID or section)"
+
+msgid "Switch request failed."
+msgstr "Switch request failed."
+
+msgid "Switch request queued."
+msgstr "Switch request queued."
+
+msgid "Trigger Immediate Check"
+msgstr "Trigger Immediate Check"
+
+msgid "Updated At"
+msgstr "Updated At"
+
+msgid "WEP"
+msgstr "WEP"
+
+msgid "WPA-PSK"
+msgstr "WPA-PSK"
+
+msgid "WPA/WPA2 Mixed"
+msgstr "WPA/WPA2 Mixed"
+
+msgid "WPA2-PSK"
+msgstr "WPA2-PSK"
+
+msgid "WPA2/WPA3 Mixed"
+msgstr "WPA2/WPA3 Mixed"
+
+msgid "WPA3-SAE"
+msgstr "WPA3-SAE"
+
+msgid "Yes"
+msgstr "Yes"

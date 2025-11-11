@@ -1,0 +1,584 @@
+#!/bin/sh
+
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+
+. /lib/functions.sh
+. /lib/functions/network.sh
+. /usr/share/libubox/jshn.sh
+
+STATE_DIR="/var/run/relaywatch"
+STATE_FILE="$STATE_DIR/state.json"
+PID_FILE="$STATE_DIR/pid"
+BLACKLIST_FILE="$STATE_DIR/blacklist"
+HOTPLUG_FILE="$STATE_DIR/hotplug_event"
+LOG_FILE="/var/log/relaywatch.log"
+LOG_SIZE_LIMIT=$((128 * 1024))
+
+CHECK_INTERVAL=30
+FAIL_THRESHOLD=3
+SWITCH_COOLDOWN=120
+BLACKLIST_TIME=600
+DHCP_RENEW=1
+
+GLOBAL_ENABLED=0
+GLOBAL_IFACE="wwan"
+GLOBAL_LAN_BRIDGE="br-lan"
+GLOBAL_RELAYD_INSTANCE="bridge"
+CHECK_METHODS="ping"
+CHECK_TARGETS="1.1.1.1,8.8.8.8"
+
+CURRENT_FAILS=0
+LAST_SWITCH=0
+CURRENT_SSID=""
+CURRENT_BSSID=""
+CURRENT_SECTION=""
+CURRENT_CANDIDATE_KEY=""
+LAST_GOOD_KEY=""
+
+FORCE_CHECK=0
+GRACE_PERIOD=20
+ASSOC_WAIT=20
+
+CANDIDATE_COUNT=0
+
+ensure_state_dir() {
+	mkdir -p "$STATE_DIR"
+	[ -f "$BLACKLIST_FILE" ] || : > "$BLACKLIST_FILE"
+	[ -f "$LOG_FILE" ] || : > "$LOG_FILE"
+}
+
+rotate_log() {
+	[ -f "$LOG_FILE" ] || return
+	local size
+	size=$(wc -c < "$LOG_FILE" 2>/dev/null)
+	[ -n "$size" ] || return
+	if [ "$size" -gt "$LOG_SIZE_LIMIT" ]; then
+		tail -n 200 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null
+		mv "${LOG_FILE}.tmp" "$LOG_FILE"
+	fi
+}
+
+log_msg() {
+	local level="$1"; shift
+	local msg="$*"
+	logger -t relaywatchd -p "daemon.${level}" "$msg"
+	printf "%s [%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$msg" >> "$LOG_FILE"
+	rotate_log
+}
+
+build_candidate_key() {
+	local ssid="$1"
+	local bssid="$2"
+	[ -n "$bssid" ] && printf "%s|%s" "$ssid" "$bssid" && return
+	printf "%s|any" "$ssid"
+}
+
+blacklist_refresh() {
+	local now tmp="$STATE_DIR/blacklist.tmp"
+	now=$(date +%s)
+	: > "$tmp"
+	BLACKLIST_ACTIVE=""
+	[ -f "$BLACKLIST_FILE" ] || { mv "$tmp" "$BLACKLIST_FILE" 2>/dev/null; return; }
+	while read -r key expiry reason; do
+		[ -z "$key" ] && continue
+		[ -z "$expiry" ] && continue
+		if [ "$expiry" -gt "$now" ] 2>/dev/null; then
+			echo "$key $expiry $reason" >> "$tmp"
+			BLACKLIST_ACTIVE="$BLACKLIST_ACTIVE$key:$expiry:$reason "
+		fi
+	done < "$BLACKLIST_FILE"
+	mv "$tmp" "$BLACKLIST_FILE" 2>/dev/null
+}
+
+blacklist_contains() {
+	local key="$1"
+	for entry in $BLACKLIST_ACTIVE; do
+		local k="${entry%%:*}"
+		local rest="${entry#*:}"
+		local expiry="${rest%%:*}"
+		if [ "$k" = "$key" ]; then
+			local now
+			now=$(date +%s)
+			if [ "$expiry" -gt "$now" ] 2>/dev/null; then
+				return 0
+			fi
+		fi
+	done
+	return 1
+}
+
+blacklist_add() {
+	local key="$1"
+	local ttl="$2"
+	local reason="$3"
+	local now expiry
+	now=$(date +%s)
+	expiry=$((now + ttl))
+	echo "$key $expiry ${reason:-unknown}" >> "$BLACKLIST_FILE"
+	blacklist_refresh
+	log_msg warning "blacklist $key for ${ttl}s due to ${reason}"
+}
+
+write_state() {
+	local event="$1"
+	local message="$2"
+	local now
+	now=$(date +%s)
+	json_init
+	json_add_int timestamp "$now"
+	json_add_string event "$event"
+	json_add_string message "$message"
+	json_add_string iface "$GLOBAL_IFACE"
+	json_add_string lan_bridge "$GLOBAL_LAN_BRIDGE"
+	json_add_string relayd_instance "$GLOBAL_RELAYD_INSTANCE"
+	json_add_int enabled "$GLOBAL_ENABLED"
+	json_add_int fail_count "$CURRENT_FAILS"
+	json_add_int last_switch "$LAST_SWITCH"
+	json_add_string current_ssid "$CURRENT_SSID"
+	json_add_string current_bssid "$CURRENT_BSSID"
+	json_add_string current_section "$CURRENT_SECTION"
+	json_add_string last_good_key "$LAST_GOOD_KEY"
+	json_add_array blacklist
+	for entry in $BLACKLIST_ACTIVE; do
+		local key="${entry%%:*}"
+		local rest="${entry#*:}"
+		local expiry="${rest%%:*}"
+		local reason="${entry##*:}"
+		json_add_object ""
+		json_add_string key "$key"
+		json_add_int expires "$expiry"
+		json_add_string reason "$reason"
+		json_close_object
+	done
+	json_close_array
+	json_dump > "$STATE_FILE"
+}
+
+load_global() {
+	local section="$1"
+	config_get_bool GLOBAL_ENABLED "$section" enabled 0
+	config_get GLOBAL_IFACE "$section" iface "wwan"
+	config_get GLOBAL_LAN_BRIDGE "$section" lan_bridge "br-lan"
+	config_get GLOBAL_RELAYD_INSTANCE "$section" relayd_instance "bridge"
+	config_get CHECK_METHODS "$section" check_method "ping"
+	config_get CHECK_TARGETS "$section" check_target "1.1.1.1,8.8.8.8"
+	config_get CHECK_INTERVAL "$section" check_interval 30
+	config_get FAIL_THRESHOLD "$section" fail_threshold 3
+	config_get SWITCH_COOLDOWN "$section" switch_cooldown 120
+	config_get BLACKLIST_TIME "$section" blacklist_time 600
+	config_get_bool DHCP_RENEW "$section" dhcp_renew 1
+}
+
+load_candidate() {
+	local section="$1"
+	local disabled ssid encryption key priority bssid
+	config_get_bool disabled "$section" disabled 0
+	[ "$disabled" = "1" ] && return
+	config_get ssid "$section" ssid
+	[ -z "$ssid" ] && return
+	config_get encryption "$section" encryption "none"
+	config_get key "$section" key ""
+	config_get bssid "$section" bssid ""
+	config_get priority "$section" priority 0
+	local idx="$CANDIDATE_COUNT"
+	eval "CAND_SECTION_$idx='$section'"
+	eval "CAND_SSID_$idx='$ssid'"
+	eval "CAND_ENC_$idx='$encryption'"
+	eval "CAND_KEY_$idx='$key'"
+	eval "CAND_BSSID_$idx='$bssid'"
+	eval "CAND_PRIORITY_$idx='${priority:-0}'"
+	CANDIDATE_COUNT=$((CANDIDATE_COUNT + 1))
+}
+
+load_config() {
+	CANDIDATE_COUNT=0
+	config_load relaywatch
+	config_foreach load_candidate candidate
+	config_foreach load_global relaywatch
+}
+
+split_list() {
+	echo "$1" | tr ', ' '\n' | sed '/^$/d'
+}
+
+check_ping_targets() {
+	local target
+	for target in $(split_list "$CHECK_TARGETS"); do
+		ping -c 1 -W 3 "$target" >/dev/null 2>&1 && return 0
+	done
+	return 1
+}
+
+check_http_targets() {
+	local target
+	for target in $(split_list "$CHECK_TARGETS"); do
+		uclient-fetch -q -O /dev/null -T 5 "$target" >/dev/null 2>&1 && return 0
+	done
+	return 1
+}
+
+perform_connectivity_check() {
+	local method success=1
+	for method in $(split_list "$CHECK_METHODS"); do
+		case "$method" in
+			ping)
+				if check_ping_targets; then
+					success=0
+					break
+				fi
+			;;
+			http)
+				if check_http_targets; then
+					success=0
+					break
+				fi
+			;;
+		esac
+	done
+	return "$success"
+}
+
+get_sorted_candidate_ids() {
+	[ "$CANDIDATE_COUNT" -eq 0 ] && return
+	local idx list=""
+	idx=0
+	while [ "$idx" -lt "$CANDIDATE_COUNT" ]; do
+		eval "prio=\${CAND_PRIORITY_$idx}"
+		list="$list $prio:$idx"
+		idx=$((idx + 1))
+	done
+	echo "$list" | tr ' ' '\n' | grep -v '^$' | sort -t: -k1,1nr | cut -d: -f2
+}
+
+select_next_candidate() {
+	local sorted idx key
+	sorted=$(get_sorted_candidate_ids)
+	[ -z "$sorted" ] && return 1
+	for idx in $sorted; do
+		eval "ssid=\${CAND_SSID_$idx}"
+		eval "bssid=\${CAND_BSSID_$idx}"
+		key=$(build_candidate_key "$ssid" "$bssid")
+		if blacklist_contains "$key"; then
+			continue
+		fi
+		if [ "$key" = "$CURRENT_CANDIDATE_KEY" ] && [ "$CANDIDATE_COUNT" -gt 1 ]; then
+			continue
+		fi
+		echo "$idx"
+		return 0
+	done
+	return 1
+}
+
+find_candidate_by_token() {
+	local token="$1"
+	local idx=0
+	while [ "$idx" -lt "$CANDIDATE_COUNT" ]; do
+		eval "ssid=\${CAND_SSID_$idx}"
+		eval "section=\${CAND_SECTION_$idx}"
+		if [ "$token" = "$ssid" ] || [ "$token" = "$section" ]; then
+			echo "$idx"
+			return 0
+		fi
+		idx=$((idx + 1))
+	done
+	return 1
+}
+
+find_candidate_by_key() {
+	local target="$1"
+	local idx=0
+	while [ "$idx" -lt "$CANDIDATE_COUNT" ]; do
+		eval "ssid=\${CAND_SSID_$idx}"
+		eval "bssid=\${CAND_BSSID_$idx}"
+		local key
+		key=$(build_candidate_key "$ssid" "$bssid")
+		if [ "$key" = "$target" ]; then
+			echo "$idx"
+			return 0
+		fi
+		idx=$((idx + 1))
+	done
+	return 1
+}
+
+apply_candidate() {
+	local idx="$1"
+	eval "ssid=\${CAND_SSID_$idx}"
+	eval "bssid=\${CAND_BSSID_$idx}"
+	eval "enc=\${CAND_ENC_$idx}"
+	eval "key=\${CAND_KEY_$idx}"
+	eval "section=\${CAND_SECTION_$idx}"
+	local key_id
+	key_id=$(build_candidate_key "$ssid" "$bssid")
+
+	log_msg info "applying candidate $section ($ssid)"
+	uci -q set "wireless.${GLOBAL_IFACE}.ssid=$ssid"
+	uci -q set "wireless.${GLOBAL_IFACE}.encryption=$enc"
+	if [ -n "$key" ]; then
+		uci -q set "wireless.${GLOBAL_IFACE}.key=$key"
+	else
+		uci -q delete "wireless.${GLOBAL_IFACE}.key" >/dev/null 2>&1
+	fi
+	if [ -n "$bssid" ]; then
+		uci -q set "wireless.${GLOBAL_IFACE}.bssid=$bssid"
+	else
+		uci -q delete "wireless.${GLOBAL_IFACE}.bssid" >/dev/null 2>&1
+	fi
+	uci -q commit wireless
+
+	if command -v wifi >/dev/null 2>&1; then
+		wifi reload >/dev/null 2>&1 || wifi up >/dev/null 2>&1
+	fi
+
+	ifup "$GLOBAL_IFACE" >/dev/null 2>&1
+	[ -n "$GLOBAL_LAN_BRIDGE" ] && ifup "$GLOBAL_LAN_BRIDGE" >/dev/null 2>&1
+	[ -n "$GLOBAL_RELAYD_INSTANCE" ] && ifup "$GLOBAL_RELAYD_INSTANCE" >/dev/null 2>&1
+
+	if [ "$DHCP_RENEW" = "1" ]; then
+		ubus call "network.interface.${GLOBAL_IFACE}" renew '{}' >/dev/null 2>&1
+	fi
+
+	if ! wait_for_assoc "$ASSOC_WAIT"; then
+		log_msg err "association timeout for $ssid"
+		return 1
+	fi
+
+	if ! perform_grace_health_check; then
+		log_msg err "candidate $ssid failed grace health check"
+		return 1
+	fi
+
+	CURRENT_SSID="$ssid"
+	CURRENT_BSSID="$bssid"
+	CURRENT_SECTION="$section"
+	CURRENT_CANDIDATE_KEY="$key_id"
+	LAST_GOOD_KEY="$key_id"
+	LAST_SWITCH=$(date +%s)
+	CURRENT_FAILS=0
+	write_state "switch_success" "switched to $ssid"
+	return 0
+}
+
+wait_for_assoc() {
+	local timeout="$1"
+	local start now
+	start=$(date +%s)
+	while true; do
+		if ubus call "network.interface.${GLOBAL_IFACE}" status 2>/dev/null | grep -q '"up": true'; then
+			return 0
+		fi
+		now=$(date +%s)
+		if [ $((now - start)) -ge "$timeout" ]; then
+			return 1
+		fi
+		sleep 2
+	done
+}
+
+perform_grace_health_check() {
+	local start now
+	start=$(date +%s)
+	while true; do
+		if perform_connectivity_check; then
+			return 0
+		fi
+		now=$(date +%s)
+		if [ $((now - start)) -ge "$GRACE_PERIOD" ]; then
+			return 1
+		fi
+		sleep 3
+	done
+}
+
+maybe_switch_candidate() {
+	local now
+	now=$(date +%s)
+	if [ "$SWITCH_COOLDOWN" -gt 0 ] && [ "$LAST_SWITCH" -ne 0 ] && [ $((now - LAST_SWITCH)) -lt "$SWITCH_COOLDOWN" ]; then
+		log_msg info "cooldown prevents switch (remaining $((SWITCH_COOLDOWN - (now - LAST_SWITCH)))s)"
+		return 1
+	fi
+
+	blacklist_refresh
+	local idx sorted tried=0
+	sorted=$(get_sorted_candidate_ids)
+	if [ -z "$sorted" ]; then
+		log_msg err "no candidate configured"
+		return 1
+	fi
+
+	for idx in $sorted; do
+		eval "ssid=\${CAND_SSID_$idx}"
+		eval "bssid=\${CAND_BSSID_$idx}"
+		local key
+		key=$(build_candidate_key "$ssid" "$bssid")
+		if blacklist_contains "$key"; then
+			continue
+		fi
+		tried=$((tried + 1))
+		if apply_candidate "$idx"; then
+			log_msg info "switched to candidate $ssid"
+			return 0
+		fi
+		if [ "$BLACKLIST_TIME" -gt 0 ] 2>/dev/null; then
+			blacklist_add "$key" "$BLACKLIST_TIME" "grace_failed"
+		fi
+	done
+
+	if [ "$tried" -eq 0 ]; then
+		log_msg err "all candidates blacklisted or unavailable"
+	fi
+
+	if [ -n "$LAST_GOOD_KEY" ] && ! blacklist_contains "$LAST_GOOD_KEY"; then
+		local rollback_idx
+		rollback_idx=$(find_candidate_by_key "$LAST_GOOD_KEY") && {
+			if apply_candidate "$rollback_idx"; then
+				log_msg warning "rolled back to last known good candidate"
+				return 0
+			fi
+		}
+	fi
+
+	write_state "switch_failed" "no viable candidate"
+
+	return 1
+}
+
+run_loop() {
+	ensure_state_dir
+	echo "$$" > "$PID_FILE"
+	trap 'FORCE_CHECK=1' USR1
+	trap 'rm -f "$PID_FILE"; exit 0' INT TERM
+
+	load_config
+	blacklist_refresh
+
+	CURRENT_SSID=$(uci -q get "wireless.${GLOBAL_IFACE}.ssid")
+	CURRENT_BSSID=$(uci -q get "wireless.${GLOBAL_IFACE}.bssid")
+	CURRENT_CANDIDATE_KEY=$(build_candidate_key "$CURRENT_SSID" "$CURRENT_BSSID")
+	LAST_GOOD_KEY="$CURRENT_CANDIDATE_KEY"
+
+	local slept disabled_logged=0
+	while true; do
+		load_config
+		blacklist_refresh
+
+		if [ "$GLOBAL_ENABLED" -ne 1 ]; then
+			if [ "$disabled_logged" -eq 0 ]; then
+				log_msg info "relaywatch disabled via config"
+				write_state "disabled" "service disabled"
+				disabled_logged=1
+			fi
+			sleep "$CHECK_INTERVAL"
+			continue
+		fi
+
+		disabled_logged=0
+
+			if perform_connectivity_check; then
+				if [ "$CURRENT_FAILS" -gt 0 ]; then
+					log_msg info "connectivity restored after ${CURRENT_FAILS} failures"
+				fi
+				CURRENT_FAILS=0
+				write_state "healthy" "connectivity ok"
+		else
+			CURRENT_FAILS=$((CURRENT_FAILS + 1))
+			log_msg warning "connectivity check failed (${CURRENT_FAILS}/${FAIL_THRESHOLD})"
+			write_state "degraded" "checks failing"
+			if [ "$CURRENT_FAILS" -ge "$FAIL_THRESHOLD" ]; then
+				if maybe_switch_candidate; then
+					CURRENT_FAILS=0
+				else
+					log_msg err "switch attempt failed"
+				fi
+			fi
+		fi
+
+		slept="$CHECK_INTERVAL"
+		if [ "$FORCE_CHECK" -eq 1 ]; then
+			FORCE_CHECK=0
+			slept=2
+		fi
+		sleep "$slept"
+	done
+}
+
+manual_switch() {
+	local token="$1"
+	load_config
+	local idx
+	idx=$(find_candidate_by_token "$token") || {
+		echo "candidate $token not found" >&2
+		return 1
+	}
+	if apply_candidate "$idx"; then
+		log_msg info "manual switch to $token successful"
+		return 0
+	fi
+	return 1
+}
+
+manual_check() {
+	load_config
+	if perform_connectivity_check; then
+		echo "ok"
+		return 0
+	fi
+	echo "fail"
+	return 1
+}
+
+hotplug_notify() {
+	local action="$1"
+	local device="$2"
+	log_msg info "hotplug wireless action=$action device=$device"
+	echo "{\"action\":\"$action\",\"device\":\"$device\",\"timestamp\":$(date +%s)}" > "$HOTPLUG_FILE"
+	if [ -f "$PID_FILE" ]; then
+		kill -USR1 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null
+	fi
+}
+
+usage() {
+	cat <<'EOF'
+Usage: relaywatchd [options]
+  (no args)        Run daemon (background loop)
+  -f, --foreground Run daemon in foreground
+  --check          Run a single health check
+  --switch TOKEN   Switch to candidate by SSID or section name
+  --notify ACTION DEVICE
+                   Hotplug notification (internal use)
+  --status         Print JSON state file
+EOF
+}
+
+case "$1" in
+	"")
+		run_loop
+	;;
+	-f|--foreground)
+		run_loop
+	;;
+	--check)
+		manual_check
+	;;
+	--switch)
+		shift
+		[ -z "$1" ] && { echo "missing candidate token" >&2; exit 1; }
+		manual_switch "$1"
+	;;
+	--notify)
+		shift
+		hotplug_notify "$1" "$2"
+	;;
+	--status)
+		[ -f "$STATE_FILE" ] && cat "$STATE_FILE"
+	;;
+	--help|-h)
+		usage
+	;;
+	*)
+		echo "unknown argument $1" >&2
+		usage >&2
+		exit 1
+	;;
+esac

@@ -1,0 +1,109 @@
+name: relaywatch-ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        openwrt_version: ["23.05.2", "22.03.5"]
+        target: ["x86/64"]
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install host prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison gawk gettext \
+            libncurses5-dev libssl-dev python3 python3-distutils rsync unzip \
+            zlib1g-dev file wget xz-utils
+
+      - name: Download OpenWrt SDK
+        id: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCH='${{ matrix.target }}'
+          VERSION='${{ matrix.openwrt_version }}'
+          ARCH_DIR="${ARCH%/*}"
+          SUBTARGET="${ARCH#*/}"
+          BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${ARCH_DIR}/${SUBTARGET}"
+          SDK_TARBALL=$(python3 - <<'PY'
+import os, sys, urllib.request
+base = os.environ["BASE_URL"]
+with urllib.request.urlopen(base + "/") as resp:
+    html = resp.read().decode()
+for token in html.split('"'):
+    if token.startswith("openwrt-sdk") and token.endswith(".tar.xz"):
+        print(token)
+        break
+else:
+    sys.exit("No SDK tarball found")
+PY
+)
+          if [ -z "$SDK_TARBALL" ]; then
+            echo "SDK tarball not located under ${BASE_URL}" >&2
+            exit 1
+          fi
+          wget -q "${BASE_URL}/${SDK_TARBALL}" -O sdk.tar.xz
+          tar -xf sdk.tar.xz
+          SDK_DIR=$(tar -tf sdk.tar.xz | head -n1 | cut -d/ -f1)
+          echo "sdk-dir=${SDK_DIR}" >> "$GITHUB_OUTPUT"
+          {
+            echo "SDK_DIR=${SDK_DIR}"
+            echo "ARCH_DIR=${ARCH_DIR}"
+            echo "SUBTARGET=${SUBTARGET}"
+            echo "BASE_URL=${BASE_URL}"
+          } >> "$GITHUB_ENV"
+
+      - name: Cache OpenWrt downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SDK_DIR }}/dl
+          key: openwrt-dl-${{ matrix.openwrt_version }}-${{ matrix.target }}
+
+      - name: Prepare SDK feeds
+        run: |
+          set -euo pipefail
+          cd "$SDK_DIR"
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          make defconfig
+
+      - name: Inject relaywatch sources
+        run: |
+          set -euo pipefail
+          mkdir -p "$SDK_DIR/package/network/services/relaywatch"
+          rsync -a package/network/services/relaywatch/ "$SDK_DIR/package/network/services/relaywatch/"
+          mkdir -p "$SDK_DIR/feeds/luci/applications"
+          rsync -a feeds/luci/applications/luci-app-relaywatch/ "$SDK_DIR/feeds/luci/applications/luci-app-relaywatch/"
+
+      - name: Build relaywatch packages
+        run: |
+          set -euo pipefail
+          cd "$SDK_DIR"
+          make package/relaywatch/compile V=s
+          make package/feeds/luci/luci-app-relaywatch/compile V=s
+
+      - name: Archive IPK artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relaywatch-${{ matrix.openwrt_version }}-${{ matrix.target }}
+          path: |
+            ${{ env.SDK_DIR }}/bin/packages/**/relaywatch*.ipk
+            ${{ env.SDK_DIR }}/bin/packages/**/luci-app-relaywatch*.ipk

@@ -1,0 +1,226 @@
+<%+
+local fs = require "nixio.fs"
+local sys = require "luci.sys"
+local jsonc = require "luci.jsonc"
+local util = require "luci.util"
+local dispatcher = require "luci.dispatcher"
+
+local state = {}
+local raw = fs.readfile("/var/run/relaywatch/state.json")
+if raw then
+	state = jsonc.parse(raw) or {}
+end
+
+local blacklist = {}
+if type(state.blacklist) == "table" then
+	blacklist = state.blacklist
+end
+
+local log_tail = sys.exec("tail -n 40 /var/log/relaywatch.log 2>/dev/null")
+local enabled = (tonumber(state.enabled or 0) == 1) and translate("Yes") or translate("No")
+local fail_count = state.fail_count or 0
+local last_switch = tonumber(state.last_switch or 0)
+local last_switch_str = (last_switch and last_switch > 0) and os.date("%Y-%m-%d %H:%M:%S", last_switch) or translate("Never")
+local updated = tonumber(state.timestamp or 0)
+local updated_str = (updated > 0) and os.date("%Y-%m-%d %H:%M:%S", updated) or translate("Not available")
+
+local check_url = dispatcher.build_url("admin/network/relaywatch/action/check")
+local switch_url = dispatcher.build_url("admin/network/relaywatch/action/switch")
+local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
+%>
+
+<%+header%>
+
+<h2><%=translate("Relay Watch Status")%></h2>
+
+<% if not raw then %>
+<div class="alert-message warning"><%=translate("State file is not available yet. Start the daemon to populate runtime data.")%></div>
+<% end %>
+
+<div class="cbi-section">
+	<h3><%=translate("Current State")%></h3>
+	<table class="table">
+		<tr>
+			<th><%=translate("Service Enabled")%></th>
+			<td><%=enabled%></td>
+		</tr>
+		<tr>
+			<th><%=translate("Current SSID")%></th>
+			<td><%=util.pcdata(state.current_ssid or translate("Not available"))%></td>
+		</tr>
+		<tr>
+			<th><%=translate("Current BSSID")%></th>
+			<td><%=util.pcdata(state.current_bssid or translate("Not available"))%></td>
+		</tr>
+		<tr>
+			<th><%=translate("Failure Count")%></th>
+			<td><%=fail_count%></td>
+		</tr>
+		<tr>
+			<th><%=translate("Last Switch")%></th>
+			<td><%=last_switch_str%></td>
+		</tr>
+		<tr>
+			<th><%=translate("Last Event")%></th>
+			<td><%=util.pcdata(state.event or translate("Not available"))%></td>
+		</tr>
+		<tr>
+			<th><%=translate("Last Message")%></th>
+			<td><%=util.pcdata(state.message or translate("Not available"))%></td>
+		</tr>
+		<tr>
+			<th><%=translate("LAN Bridge")%></th>
+			<td><%=util.pcdata(state.lan_bridge or "-")%></td>
+		</tr>
+		<tr>
+			<th><%=translate("Relayd Instance")%></th>
+			<td><%=util.pcdata(state.relayd_instance or "-")%></td>
+		</tr>
+		<tr>
+			<th><%=translate("Updated At")%></th>
+			<td><%=updated_str%></td>
+		</tr>
+	</table>
+</div>
+
+<div class="cbi-section">
+	<h3><%=translate("Status Actions")%></h3>
+	<div id="relaywatch-feedback" class="alert-message" style="display:none;"></div>
+	<div class="cbi-value">
+		<button class="cbi-button cbi-button-apply" onclick="relaywatchRunCheck(this)"><%=translate("Trigger Immediate Check")%></button>
+		<button class="cbi-button cbi-button-reset" onclick="location.reload()"><%=translate("Refresh")%></button>
+	</div>
+	<div class="cbi-value">
+		<label><%=translate("Switch Token (SSID or section)")%></label>
+		<input type="text" id="relaywatch-switch-token" placeholder="Home_AP" />
+		<button class="cbi-button cbi-button-action" onclick="relaywatchManualSwitch(this)"><%=translate("Switch")%></button>
+	</div>
+	<div class="cbi-value">
+		<button class="cbi-button cbi-button-neutral" onclick="relaywatchScan(this)"><%=translate("Scan Nearby Networks")%></button>
+	</div>
+</div>
+
+<div class="cbi-section">
+	<h3><%=translate("Scan Results")%></h3>
+	<table class="table" id="relaywatch-scan-table">
+		<thead>
+			<tr>
+				<th><%=translate("SSID")%></th>
+				<th><%=translate("BSSID")%></th>
+				<th><%=translate("Signal")%></th>
+				<th><%=translate("Channel")%></th>
+				<th><%=translate("Encryption")%></th>
+			</tr>
+		</thead>
+		<tbody>
+			<tr id="relaywatch-scan-empty">
+				<td colspan="5"><%=translate("No entries")%></td>
+			</tr>
+		</tbody>
+	</table>
+</div>
+
+<div class="cbi-section">
+	<h3><%=translate("Blacklist")%></h3>
+	<table class="table">
+		<thead>
+			<tr>
+				<th><%=translate("Key")%></th>
+				<th><%=translate("Expires")%></th>
+				<th><%=translate("Reason")%></th>
+			</tr>
+		</thead>
+		<tbody>
+			<% if #blacklist == 0 then %>
+				<tr><td colspan="3"><%=translate("No entries")%></td></tr>
+			<% else
+				for _, item in ipairs(blacklist) do
+					local expires = tonumber(item.expires or 0)
+					local expires_str = (expires > 0) and os.date("%Y-%m-%d %H:%M:%S", expires) or translate("Not available")
+			%>
+				<tr>
+					<td><%=util.pcdata(item.key or "-")%></td>
+					<td><%=expires_str%></td>
+					<td><%=util.pcdata(item.reason or "-")%></td>
+				</tr>
+			<% end end %>
+		</tbody>
+	</table>
+</div>
+
+<div class="cbi-section">
+	<h3><%=translate("Recent Log")%></h3>
+	<pre id="relaywatch-log"><%=util.pcdata(log_tail ~= "" and log_tail or translate("Not available"))%></pre>
+</div>
+
+<%+footer%>
+
+<script type="text/javascript">
+(function() {
+	"use strict";
+
+	function setFeedback(message, level) {
+		var box = document.getElementById("relaywatch-feedback");
+		if (!box)
+			return;
+		box.style.display = "block";
+		box.className = "alert-message " + (level || "notice");
+		box.textContent = message;
+	}
+
+	window.relaywatchRunCheck = function(btn) {
+		if (btn) btn.disabled = true;
+		XHR.get("<%=check_url%>", null, function(_, res) {
+			if (btn) btn.disabled = false;
+			if (!res || res.status !== "ok")
+				return setFeedback("<%=translate("Health check failed")%>", "error");
+			setFeedback("<%=translate("Health check succeeded")%>", "success");
+		});
+	};
+
+	window.relaywatchManualSwitch = function(btn) {
+		var token = document.getElementById("relaywatch-switch-token").value.trim();
+		if (!token)
+			return setFeedback("<%=translate("Please provide a target SSID or section name.")%>", "warning");
+		if (btn) btn.disabled = true;
+		XHR.post("<%=switch_url%>", { token: token }, function(_, res) {
+			if (btn) btn.disabled = false;
+			if (!res || res.status !== "ok")
+				return setFeedback("<%=translate("Switch request failed.")%>", "error");
+			setFeedback("<%=translate("Switch request queued.")%>", "success");
+		});
+	};
+
+	window.relaywatchScan = function(btn) {
+		if (btn) btn.disabled = true;
+		XHR.get("<%=scan_url%>", null, function(_, res) {
+			if (btn) btn.disabled = false;
+			if (!res || !res.results)
+				return setFeedback("<%=translate("Failed to scan for nearby networks.")%>", "error");
+			var table = document.getElementById("relaywatch-scan-table").querySelector("tbody");
+			var empty = document.getElementById("relaywatch-scan-empty");
+			if (empty)
+				empty.remove();
+			table.innerHTML = "";
+			res.results.forEach(function(entry) {
+				var tr = document.createElement("tr");
+				["ssid", "bssid", "signal", "channel", "encryption"].forEach(function(key) {
+					var td = document.createElement("td");
+					td.textContent = entry[key] != null ? entry[key] : "-";
+					tr.appendChild(td);
+				});
+				table.appendChild(tr);
+			});
+			if (!res.results.length) {
+				var tr = document.createElement("tr");
+				var td = document.createElement("td");
+				td.colSpan = 5;
+				td.textContent = "<%=translate("No entries")%>";
+				tr.appendChild(td);
+				table.appendChild(tr);
+			}
+			setFeedback("<%=translate("Scan complete.")%>", "notice");
+		});
+	};
+})();
+</script>

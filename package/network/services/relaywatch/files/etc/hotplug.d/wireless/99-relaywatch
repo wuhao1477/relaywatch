@@ -1,0 +1,20 @@
+#!/bin/sh
+
+PROG="/usr/sbin/relaywatchd"
+EVENT="${ACTION:-unknown}"
+DEVICE="${DEVICE:-}"
+IFACE="${INTERFACE:-}"
+
+case "$EVENT" in
+	connected|disconnected|assoc|disassoc|up|down)
+		;;
+	*)
+		exit 0
+	;;
+esac
+
+if [ -x "$PROG" ]; then
+	"$PROG" --notify "$EVENT" "${IFACE:-$DEVICE}" >/dev/null 2>&1 &
+fi
+
+exit 0
