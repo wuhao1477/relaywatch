@@ -35,84 +35,84 @@ jobs:
         run: |
           set -euo pipefail
           matrix_json=$(python3 - <<'PY'
-import json
-import os
-from pathlib import Path
+          import json
+          import os
+          from pathlib import Path
 
-DEFAULT_TARGETS = ["x86/64"]
-DEFAULT_VERSIONS = ["23.05.2", "22.03.5"]
+          DEFAULT_TARGETS = ["x86/64"]
+          DEFAULT_VERSIONS = ["23.05.2", "22.03.5"]
 
-event_path = Path(os.environ.get("GITHUB_EVENT_PATH", ""))
-payload = {}
-if event_path.is_file():
-    try:
-        payload = json.loads(event_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        payload = {}
+          event_path = Path(os.environ.get("GITHUB_EVENT_PATH", ""))
+          payload = {}
+          if event_path.is_file():
+              try:
+                  payload = json.loads(event_path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError:
+                  payload = {}
 
-client_payload = payload.get("client_payload") or {}
-inputs = payload.get("inputs") or {}
+          client_payload = payload.get("client_payload") or {}
+          inputs = payload.get("inputs") or {}
 
-def normalize(value):
-    if value in (None, ""):
-        return []
-    if isinstance(value, list):
-        items = value
-    else:
-        items = [value]
-    result = []
-    for item in items:
-        if item in (None, ""):
-            continue
-        if isinstance(item, str):
-            parts = [part.strip() for part in item.split(",")]
-            result.extend([part for part in parts if part])
-        else:
-            result.append(str(item))
-    return result
+          def normalize(value):
+              if value in (None, ""):
+                  return []
+              if isinstance(value, list):
+                  items = value
+              else:
+                  items = [value]
+              result = []
+              for item in items:
+                  if item in (None, ""):
+                      continue
+                  if isinstance(item, str):
+                      parts = [part.strip() for part in item.split(",")]
+                      result.extend([part for part in parts if part])
+                  else:
+                      result.append(str(item))
+              return result
 
-def dedupe(items):
-    seen = set()
-    ordered = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            ordered.append(item)
-    return ordered
+          def dedupe(items):
+              seen = set()
+              ordered = []
+              for item in items:
+                  if item not in seen:
+                      seen.add(item)
+                      ordered.append(item)
+              return ordered
 
-def format_target(value):
-    value = value.strip()
-    if "/" in value:
-        return value
-    if "_" in value:
-        head, tail = value.split("_", 1)
-        return f"{head}/{tail}"
-    return value
+          def format_target(value):
+              value = value.strip()
+              if "/" in value:
+                  return value
+              if "_" in value:
+                  head, tail = value.split("_", 1)
+                  return f"{head}/{tail}"
+              return value
 
-targets = []
-targets.extend(normalize(client_payload.get("target")))
-targets.extend(normalize(client_payload.get("targets")))
-targets.extend(normalize(inputs.get("target")))
-targets.extend(normalize(inputs.get("targets")))
+          targets = []
+          targets.extend(normalize(client_payload.get("target")))
+          targets.extend(normalize(client_payload.get("targets")))
+          targets.extend(normalize(inputs.get("target")))
+          targets.extend(normalize(inputs.get("targets")))
 
-versions = []
-versions.extend(normalize(client_payload.get("openwrt_version")))
-versions.extend(normalize(client_payload.get("openwrt_versions")))
-versions.extend(normalize(inputs.get("openwrt_version")))
-versions.extend(normalize(inputs.get("openwrt_versions")))
+          versions = []
+          versions.extend(normalize(client_payload.get("openwrt_version")))
+          versions.extend(normalize(client_payload.get("openwrt_versions")))
+          versions.extend(normalize(inputs.get("openwrt_version")))
+          versions.extend(normalize(inputs.get("openwrt_versions")))
 
-targets = [format_target(t) for t in dedupe(targets) if t]
-versions = dedupe([v for v in versions if v])
+          targets = [format_target(t) for t in dedupe(targets) if t]
+          versions = dedupe([v for v in versions if v])
 
-if not targets:
-    targets = DEFAULT_TARGETS
-if not versions:
-    versions = DEFAULT_VERSIONS
+          if not targets:
+              targets = DEFAULT_TARGETS
+          if not versions:
+              versions = DEFAULT_VERSIONS
 
-matrix = {"openwrt_version": versions, "target": targets}
-print(json.dumps(matrix))
-PY
-)
+          matrix = {"openwrt_version": versions, "target": targets}
+          print(json.dumps(matrix))
+          PY
+          )
           echo "matrix=${matrix_json}" >> "$GITHUB_OUTPUT"
 
   build:
