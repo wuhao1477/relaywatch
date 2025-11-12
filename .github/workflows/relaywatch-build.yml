@@ -188,23 +188,19 @@ jobs:
           path: ${{ env.SDK_DIR }}/dl
           key: openwrt-dl-${{ matrix.openwrt_version }}-${{ matrix.target }}
 
-      - name: Prepare SDK feeds
-        run: |
-          set -euo pipefail
-          cd "$SDK_DIR"
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          make defconfig
-
       - name: Inject relaywatch sources
         run: |
           set -euo pipefail
           mkdir -p "$SDK_DIR/package/network/services/relaywatch"
-          rsync -a package/network/services/relaywatch/ "$SDK_DIR/package/network/services/relaywatch/"
+          rsync -a --delete package/network/services/relaywatch/ "$SDK_DIR/package/network/services/relaywatch/"
           mkdir -p "$SDK_DIR/feeds/luci/applications"
-          rsync -a feeds/luci/applications/luci-app-relaywatch/ "$SDK_DIR/feeds/luci/applications/luci-app-relaywatch/"
+          rsync -a --delete feeds/luci/applications/luci-app-relaywatch/ "$SDK_DIR/feeds/luci/applications/luci-app-relaywatch/"
           cd "$SDK_DIR"
-          ./scripts/feeds install luci-app-relaywatch
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          ./scripts/feeds uninstall luci-app-relaywatch || true
+          ./scripts/feeds install -p luci luci-app-relaywatch
+          make defconfig
 
       - name: Build relaywatch packages
         run: |
