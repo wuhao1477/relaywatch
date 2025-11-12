@@ -163,7 +163,12 @@ jobs:
           fi
           wget -q "${BASE_URL}/${SDK_TARBALL}" -O sdk.tar.xz
           tar -xf sdk.tar.xz
-          SDK_DIR=$(tar -tf sdk.tar.xz | head -n1 | cut -d/ -f1)
+          SDK_DIR=$(find . -maxdepth 1 -mindepth 1 -type d -name 'openwrt-sdk-*' -print -quit)
+          SDK_DIR=${SDK_DIR#./}
+          if [ -z "$SDK_DIR" ]; then
+            echo "Unable to determine extracted SDK directory" >&2
+            exit 1
+          fi
           echo "sdk-dir=${SDK_DIR}" >> "$GITHUB_OUTPUT"
           {
             echo "SDK_DIR=${SDK_DIR}"
