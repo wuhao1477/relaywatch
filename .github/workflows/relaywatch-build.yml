@@ -161,7 +161,7 @@ jobs:
             echo "SDK tarball not located under ${BASE_URL}" >&2
             exit 1
           fi
-          wget --show-progress --progress=dot:giga -- "${BASE_URL}/${SDK_TARBALL}" -O sdk.tar.xz
+          wget --show-progress --progress=dot:giga --output-document=sdk.tar.xz -- "${BASE_URL}/${SDK_TARBALL}"
           SDK_DIR="openwrt-sdk"
           rm -rf "$SDK_DIR"
           mkdir -p "$SDK_DIR"
