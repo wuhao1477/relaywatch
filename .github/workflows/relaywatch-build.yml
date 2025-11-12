@@ -205,8 +205,8 @@ jobs:
           mkdir -p package/feeds/luci
           ln -sfn "$PWD/feeds/luci/applications/luci-app-relaywatch" package/feeds/luci/luci-app-relaywatch
           make defconfig
-          ./scripts/config --file .config setval PACKAGE_relaywatch y
-          ./scripts/config --file .config setval PACKAGE_luci-app-relaywatch y
+          ./scripts/config --file .config --enable PACKAGE_relaywatch
+          ./scripts/config --file .config --enable PACKAGE_luci-app-relaywatch
           make defconfig
           popd >/dev/null
 
