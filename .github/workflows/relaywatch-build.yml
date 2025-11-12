@@ -193,14 +193,17 @@ jobs:
           set -euo pipefail
           mkdir -p "$SDK_DIR/package/network/services/relaywatch"
           rsync -a --delete package/network/services/relaywatch/ "$SDK_DIR/package/network/services/relaywatch/"
+          pushd "$SDK_DIR" >/dev/null
+          ./scripts/feeds update -a
+          popd >/dev/null
           mkdir -p "$SDK_DIR/feeds/luci/applications"
           rsync -a --delete feeds/luci/applications/luci-app-relaywatch/ "$SDK_DIR/feeds/luci/applications/luci-app-relaywatch/"
-          cd "$SDK_DIR"
-          ./scripts/feeds update -a
+          pushd "$SDK_DIR" >/dev/null
           ./scripts/feeds install -a
           ./scripts/feeds uninstall luci-app-relaywatch || true
           ./scripts/feeds install -p luci luci-app-relaywatch
           make defconfig
+          popd >/dev/null
 
       - name: Build relaywatch packages
         run: |
