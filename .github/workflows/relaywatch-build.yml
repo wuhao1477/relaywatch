@@ -161,14 +161,19 @@ jobs:
             echo "SDK tarball not located under ${BASE_URL}" >&2
             exit 1
           fi
-          wget -q "${BASE_URL}/${SDK_TARBALL}" -O sdk.tar.xz
-          tar -xf sdk.tar.xz
-          SDK_DIR=$(find . -maxdepth 1 -mindepth 1 -type d -name 'openwrt-sdk-*' -print -quit)
-          SDK_DIR=${SDK_DIR#./}
-          if [ -z "$SDK_DIR" ]; then
-            echo "Unable to determine extracted SDK directory" >&2
+          wget --show-progress --progress=dot:giga -- "${BASE_URL}/${SDK_TARBALL}" -O sdk.tar.xz
+          SDK_DIR="openwrt-sdk"
+          rm -rf "$SDK_DIR"
+          mkdir -p "$SDK_DIR"
+          if ! tar -xJf sdk.tar.xz --strip-components=1 -C "$SDK_DIR"; then
+            echo "Failed to extract SDK tarball" >&2
             exit 1
           fi
+          if [ ! -f "$SDK_DIR/feeds.conf.default" ]; then
+            echo "Extracted SDK directory does not contain feeds.conf.default" >&2
+            exit 1
+          fi
+          rm -f sdk.tar.xz
           echo "sdk-dir=${SDK_DIR}" >> "$GITHUB_OUTPUT"
           {
             echo "SDK_DIR=${SDK_DIR}"
