@@ -214,11 +214,18 @@ jobs:
           make package/relaywatch/compile V=s
           make package/feeds/luci/luci-app-relaywatch/compile V=s
 
+      - name: 准备制品名称
+        if: always()
+        run: |
+          SAFE_TARGET='${{ matrix.target }}'
+          SAFE_TARGET="${SAFE_TARGET//\//-}"
+          echo "ARTIFACT_NAME=relaywatch-${{ matrix.openwrt_version }}-${SAFE_TARGET}" >> "$GITHUB_ENV"
+
       - name: Archive IPK artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: relaywatch-${{ matrix.openwrt_version }}-${{ replace(matrix.target, '/', '-') }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: |
             ${{ env.SDK_DIR }}/bin/packages/**/relaywatch*.ipk
             ${{ env.SDK_DIR }}/bin/packages/**/luci-app-relaywatch*.ipk
