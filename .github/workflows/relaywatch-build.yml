@@ -204,10 +204,9 @@ jobs:
           ./scripts/feeds install -p luci luci-app-relaywatch || ./scripts/feeds install luci-app-relaywatch || true
           mkdir -p package/feeds/luci
           ln -sfn "$PWD/feeds/luci/applications/luci-app-relaywatch" package/feeds/luci/luci-app-relaywatch
-          {
-            echo 'CONFIG_PACKAGE_relaywatch=y'
-            echo 'CONFIG_PACKAGE_luci-app-relaywatch=y'
-          } >> .config
+          make defconfig
+          ./scripts/config --file .config setval PACKAGE_relaywatch y
+          ./scripts/config --file .config setval PACKAGE_luci-app-relaywatch y
           make defconfig
           popd >/dev/null
 
