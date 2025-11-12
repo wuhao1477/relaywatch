@@ -203,6 +203,8 @@ jobs:
           rsync -a package/network/services/relaywatch/ "$SDK_DIR/package/network/services/relaywatch/"
           mkdir -p "$SDK_DIR/feeds/luci/applications"
           rsync -a feeds/luci/applications/luci-app-relaywatch/ "$SDK_DIR/feeds/luci/applications/luci-app-relaywatch/"
+          cd "$SDK_DIR"
+          ./scripts/feeds install luci-app-relaywatch
 
       - name: Build relaywatch packages
         run: |
