@@ -1,5 +1,6 @@
 module("luci.controller.relaywatch", package.seeall)
 
+-- 控制器负责注册 LuCI 路由与 Ajax 接口
 local http = require "luci.http"
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
@@ -11,28 +12,31 @@ local ubus_call = util.ubus or function() return nil end
 local STATE_FILE = "/var/run/relaywatch/state.json"
 local LOG_FILE = "/var/log/relaywatch.log"
 
+-- 解析守护进程绑定的 STA 接口配置段名称
 local function resolve_sta_section()
-	return uci:get("relaywatch", "global", "iface") or "wwan"
+        return uci:get("relaywatch", "global", "iface") or "wwan"
 end
 
+-- 通过 ubus 返回的无线状态获取实际的 ifname
 local function resolve_ifname()
-	local section = resolve_sta_section()
-	local status = ubus_call("network.wireless", "status", {}) or {}
-	for _, radio in pairs(status) do
-		local interfaces = radio.interfaces or {}
-		for _, iface in ipairs(interfaces) do
-			if iface.section == section then
-				return iface.ifname or iface.device
-			end
-		end
-	end
-	return uci:get("wireless", section, "ifname")
+        local section = resolve_sta_section()
+        local status = ubus_call("network.wireless", "status", {}) or {}
+        for _, radio in pairs(status) do
+                local interfaces = radio.interfaces or {}
+                for _, iface in ipairs(interfaces) do
+                        if iface.section == section then
+                                return iface.ifname or iface.device
+                        end
+                end
+        end
+        return uci:get("wireless", section, "ifname")
 end
 
+-- 注册菜单入口与动作接口
 function index()
-	if not fs.access("/etc/config/relaywatch") then
-		return
-	end
+        if not fs.access("/etc/config/relaywatch") then
+                return
+        end
 
 	local page = entry({"admin", "network", "relaywatch"}, firstchild(), _("Relay Watch"), 60)
 	page.dependent = true
@@ -47,10 +51,11 @@ function index()
 	entry({"admin", "network", "relaywatch", "action", "state"}, call("action_state")).leaf = true
 end
 
+-- 调用 iwinfo 扫描周边 AP，并将结果以 JSON 返回
 function action_scan()
-	local ok, iwinfo = pcall(require, "iwinfo")
-	http.prepare_content("application/json")
-	if not ok then
+        local ok, iwinfo = pcall(require, "iwinfo")
+        http.prepare_content("application/json")
+        if not ok then
 		http.write_json({ error = "iwinfo-missing" })
 		return
 	end
@@ -82,18 +87,20 @@ function action_scan()
 	http.write_json({ results = result, ifname = ifname })
 end
 
+-- 触发一次守护进程的即时健康检查
 function action_check()
-	local rc = sys.call("/usr/sbin/relaywatchd --check >/dev/null 2>&1")
-	http.prepare_content("application/json")
-	http.write_json({
-		status = (rc == 0) and "ok" or "fail"
-	})
+        local rc = sys.call("/usr/sbin/relaywatchd --check >/dev/null 2>&1")
+        http.prepare_content("application/json")
+        http.write_json({
+                status = (rc == 0) and "ok" or "fail"
+        })
 end
 
+-- 调用守护进程命令行执行手动切换
 function action_switch()
-	local token = http.formvalue("token") or ""
-	http.prepare_content("application/json")
-	if token == "" then
+        local token = http.formvalue("token") or ""
+        http.prepare_content("application/json")
+        if token == "" then
 		http.write_json({ status = "fail", message = "missing token" })
 		return
 	end
@@ -105,10 +112,11 @@ function action_switch()
 	})
 end
 
+-- 汇总状态文件与日志尾部，供前端刷新状态
 function action_state()
-	local state = {}
-	if fs.access(STATE_FILE) then
-		state = jsonc.parse(fs.readfile(STATE_FILE)) or {}
+        local state = {}
+        if fs.access(STATE_FILE) then
+                state = jsonc.parse(fs.readfile(STATE_FILE)) or {}
 	end
 	local log_tail = sys.exec(string.format("tail -n 40 %q 2>/dev/null", LOG_FILE))
 	http.prepare_content("application/json")
