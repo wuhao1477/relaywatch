@@ -196,7 +196,7 @@ jobs:
           pushd "$SDK_DIR" >/dev/null
           cp feeds.conf.default feeds.conf
           sed -i '/telephony/d' feeds.conf
-          FEEDS_CONF=feeds.conf ./scripts/feeds update packages luci routing
+          FEEDS_CONF=feeds.conf ./scripts/feeds update -a
           popd >/dev/null
           mkdir -p "$SDK_DIR/feeds/luci/applications"
           rsync -a --delete feeds/luci/applications/luci-app-relaywatch/ "$SDK_DIR/feeds/luci/applications/luci-app-relaywatch/"
