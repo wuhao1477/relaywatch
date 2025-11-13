@@ -204,6 +204,48 @@ msgstr "切换请求已提交。"
 msgid "Trigger Immediate Check"
 msgstr "立即执行检测"
 
+msgid "Wireless Interface"
+msgstr "无线接口"
+
+msgid "Noise"
+msgstr "噪声"
+
+msgid "Bit Rate"
+msgstr "速率"
+
+msgid "Link Quality"
+msgstr "链路质量"
+
+msgid "Failure Rounds"
+msgstr "失败轮次"
+
+msgid "Next Switch Window"
+msgstr "下一次切换窗口"
+
+msgid "Cooldown Remaining"
+msgstr "剩余冷却时间"
+
+msgid "Import"
+msgstr "导入"
+
+msgid "Missing SSID information from scan result."
+msgstr "扫描结果缺少 SSID 信息。"
+
+msgid "Import request failed."
+msgstr "导入请求失败。"
+
+msgid "Candidate already exists."
+msgstr "候选已存在。"
+
+msgid "Candidate imported. Please review the entry on the Candidates tab."
+msgstr "候选已导入，请在“候选”页确认条目。"
+
+msgid "Remember to fill in the password for secured networks."
+msgstr "如为加密网络，请记得补充密码。"
+
+msgid "Not scheduled"
+msgstr "未计划"
+
 msgid "Updated At"
 msgstr "更新时间"
 

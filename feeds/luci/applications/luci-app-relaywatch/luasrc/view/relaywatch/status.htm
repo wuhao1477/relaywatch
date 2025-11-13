@@ -1,4 +1,5 @@
 <%+
+-- LuCI 状态页视图，负责展示守护进程状态、日志与操作按钮
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local jsonc = require "luci.jsonc"
@@ -23,10 +24,14 @@ local last_switch = tonumber(state.last_switch or 0)
 local last_switch_str = (last_switch and last_switch > 0) and os.date("%Y-%m-%d %H:%M:%S", last_switch) or translate("Never")
 local updated = tonumber(state.timestamp or 0)
 local updated_str = (updated > 0) and os.date("%Y-%m-%d %H:%M:%S", updated) or translate("Not available")
+local next_allowed = tonumber(state.next_switch_allowed or 0)
+local next_allowed_str = (next_allowed and next_allowed > 0) and os.date("%Y-%m-%d %H:%M:%S", next_allowed) or translate("Not scheduled")
+local cooldown_remaining = tonumber(state.cooldown_remaining or 0) or 0
 
 local check_url = dispatcher.build_url("admin/network/relaywatch/action/check")
 local switch_url = dispatcher.build_url("admin/network/relaywatch/action/switch")
 local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
+local import_url = dispatcher.build_url("admin/network/relaywatch/action/import")
 %>
 
 <%+header%>
@@ -48,14 +53,38 @@ local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
 			<th><%=translate("Current SSID")%></th>
 			<td><%=util.pcdata(state.current_ssid or translate("Not available"))%></td>
 		</tr>
-		<tr>
-			<th><%=translate("Current BSSID")%></th>
-			<td><%=util.pcdata(state.current_bssid or translate("Not available"))%></td>
-		</tr>
-		<tr>
-			<th><%=translate("Failure Count")%></th>
-			<td><%=fail_count%></td>
-		</tr>
+                <tr>
+                        <th><%=translate("Current BSSID")%></th>
+                        <td><%=util.pcdata(state.current_bssid or translate("Not available"))%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Wireless Interface")%></th>
+                        <td><%=util.pcdata(state.ifname or translate("Not available"))%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Signal")%></th>
+                        <td><%=util.pcdata(state.signal or translate("Not available"))%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Noise")%></th>
+                        <td><%=util.pcdata(state.noise or translate("Not available"))%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Bit Rate")%></th>
+                        <td><%=util.pcdata(state.bitrate or translate("Not available"))%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Link Quality")%></th>
+                        <td><%=util.pcdata(state.quality or translate("Not available"))%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Failure Count")%></th>
+                        <td><%=fail_count%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Failure Rounds")%></th>
+                        <td><%=state.fail_rounds or 0%></td>
+                </tr>
 		<tr>
 			<th><%=translate("Last Switch")%></th>
 			<td><%=last_switch_str%></td>
@@ -68,25 +97,41 @@ local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
 			<th><%=translate("Last Message")%></th>
 			<td><%=util.pcdata(state.message or translate("Not available"))%></td>
 		</tr>
-		<tr>
-			<th><%=translate("LAN Bridge")%></th>
-			<td><%=util.pcdata(state.lan_bridge or "-")%></td>
-		</tr>
-		<tr>
-			<th><%=translate("Relayd Instance")%></th>
-			<td><%=util.pcdata(state.relayd_instance or "-")%></td>
-		</tr>
-		<tr>
-			<th><%=translate("Updated At")%></th>
-			<td><%=updated_str%></td>
-		</tr>
-	</table>
+                <tr>
+                        <th><%=translate("LAN Bridge")%></th>
+                        <td><%=util.pcdata(state.lan_bridge or "-")%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Relayd Instance")%></th>
+                        <td><%=util.pcdata(state.relayd_instance or "-")%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("IPv4 Address")%></th>
+                        <td><%=util.pcdata(state.ipv4 or translate("Not available"))%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("IPv6 Address")%></th>
+                        <td><%=util.pcdata(state.ipv6 or translate("Not available"))%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Updated At")%></th>
+                        <td><%=updated_str%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Next Switch Window")%></th>
+                        <td><%=next_allowed_str%></td>
+                </tr>
+                <tr>
+                        <th><%=translate("Cooldown Remaining")%></th>
+                        <td><%=cooldown_remaining%>s</td>
+                </tr>
+        </table>
 </div>
 
 <div class="cbi-section">
-	<h3><%=translate("Status Actions")%></h3>
-	<div id="relaywatch-feedback" class="alert-message" style="display:none;"></div>
-	<div class="cbi-value">
+        <h3><%=translate("Status Actions")%></h3>
+        <div id="relaywatch-feedback" class="alert-message" style="display:none;"></div>
+        <div class="cbi-value">
 		<button class="cbi-button cbi-button-apply" onclick="relaywatchRunCheck(this)"><%=translate("Trigger Immediate Check")%></button>
 		<button class="cbi-button cbi-button-reset" onclick="location.reload()"><%=translate("Refresh")%></button>
 	</div>
@@ -102,22 +147,25 @@ local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
 
 <div class="cbi-section">
 	<h3><%=translate("Scan Results")%></h3>
-	<table class="table" id="relaywatch-scan-table">
-		<thead>
-			<tr>
-				<th><%=translate("SSID")%></th>
-				<th><%=translate("BSSID")%></th>
-				<th><%=translate("Signal")%></th>
-				<th><%=translate("Channel")%></th>
-				<th><%=translate("Encryption")%></th>
-			</tr>
-		</thead>
-		<tbody>
-			<tr id="relaywatch-scan-empty">
-				<td colspan="5"><%=translate("No entries")%></td>
-			</tr>
-		</tbody>
-	</table>
+        <table class="table" id="relaywatch-scan-table">
+                <thead>
+                        <tr>
+                                <th><%=translate("SSID")%></th>
+                                <th><%=translate("BSSID")%></th>
+                                <th><%=translate("Signal")%></th>
+                                <th><%=translate("Noise")%></th>
+                                <th><%=translate("Quality")%></th>
+                                <th><%=translate("Channel")%></th>
+                                <th><%=translate("Encryption")%></th>
+                                <th><%=translate("Actions")%></th>
+                        </tr>
+                </thead>
+                <tbody>
+                        <tr id="relaywatch-scan-empty">
+                                <td colspan="8"><%=translate("No entries")%></td>
+                        </tr>
+                </tbody>
+        </table>
 </div>
 
 <div class="cbi-section">
@@ -159,29 +207,31 @@ local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
 (function() {
 	"use strict";
 
-	function setFeedback(message, level) {
-		var box = document.getElementById("relaywatch-feedback");
-		if (!box)
-			return;
+        function setFeedback(message, level) {
+                var box = document.getElementById("relaywatch-feedback");
+                if (!box)
+                        return;
 		box.style.display = "block";
 		box.className = "alert-message " + (level || "notice");
 		box.textContent = message;
 	}
 
-	window.relaywatchRunCheck = function(btn) {
-		if (btn) btn.disabled = true;
-		XHR.get("<%=check_url%>", null, function(_, res) {
-			if (btn) btn.disabled = false;
+        // 触发一次后台健康检查
+        window.relaywatchRunCheck = function(btn) {
+                if (btn) btn.disabled = true;
+                XHR.get("<%=check_url%>", null, function(_, res) {
+                        if (btn) btn.disabled = false;
 			if (!res || res.status !== "ok")
 				return setFeedback("<%=translate("Health check failed")%>", "error");
 			setFeedback("<%=translate("Health check succeeded")%>", "success");
 		});
 	};
 
-	window.relaywatchManualSwitch = function(btn) {
-		var token = document.getElementById("relaywatch-switch-token").value.trim();
-		if (!token)
-			return setFeedback("<%=translate("Please provide a target SSID or section name.")%>", "warning");
+        // 手动切换到指定候选
+        window.relaywatchManualSwitch = function(btn) {
+                var token = document.getElementById("relaywatch-switch-token").value.trim();
+                if (!token)
+                        return setFeedback("<%=translate("Please provide a target SSID or section name.")%>", "warning");
 		if (btn) btn.disabled = true;
 		XHR.post("<%=switch_url%>", { token: token }, function(_, res) {
 			if (btn) btn.disabled = false;
@@ -191,9 +241,10 @@ local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
 		});
 	};
 
-	window.relaywatchScan = function(btn) {
-		if (btn) btn.disabled = true;
-		XHR.get("<%=scan_url%>", null, function(_, res) {
+        // 执行周边网络扫描并填充结果表格
+        window.relaywatchScan = function(btn) {
+                if (btn) btn.disabled = true;
+                XHR.get("<%=scan_url%>", null, function(_, res) {
 			if (btn) btn.disabled = false;
 			if (!res || !res.results)
 				return setFeedback("<%=translate("Failed to scan for nearby networks.")%>", "error");
@@ -202,25 +253,85 @@ local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
 			if (empty)
 				empty.remove();
 			table.innerHTML = "";
-			res.results.forEach(function(entry) {
-				var tr = document.createElement("tr");
-				["ssid", "bssid", "signal", "channel", "encryption"].forEach(function(key) {
-					var td = document.createElement("td");
-					td.textContent = entry[key] != null ? entry[key] : "-";
-					tr.appendChild(td);
-				});
-				table.appendChild(tr);
-			});
-			if (!res.results.length) {
-				var tr = document.createElement("tr");
-				var td = document.createElement("td");
-				td.colSpan = 5;
-				td.textContent = "<%=translate("No entries")%>";
-				tr.appendChild(td);
-				table.appendChild(tr);
-			}
-			setFeedback("<%=translate("Scan complete.")%>", "notice");
-		});
-	};
+                        res.results.forEach(function(entry) {
+                                var tr = document.createElement("tr");
+                                var quality = "-";
+                                if (entry.quality != null && entry.quality_max != null) {
+                                        quality = entry.quality + "/" + entry.quality_max;
+                                } else if (entry.quality != null) {
+                                        quality = entry.quality;
+                                }
+
+                                var signalText = entry.signal != null ? entry.signal + " dBm" : "-";
+                                var noiseText = entry.noise != null ? entry.noise + " dBm" : "-";
+
+                                var cells = [
+                                        entry.ssid || "-",
+                                        entry.bssid || "-",
+                                        signalText,
+                                        noiseText,
+                                        quality,
+                                        entry.channel != null ? entry.channel : "-",
+                                        entry.encryption || entry.encryption_suggestion || "-"
+                                ];
+
+                                cells.forEach(function(value) {
+                                        var td = document.createElement("td");
+                                        td.textContent = value;
+                                        tr.appendChild(td);
+                                });
+
+                                var actionTd = document.createElement("td");
+                                var btn = document.createElement("button");
+                                btn.className = "cbi-button cbi-button-action";
+                                btn.textContent = "<%=translate("Import")%>";
+                                btn.onclick = function() {
+                                        relaywatchImportCandidate(entry, btn);
+                                };
+                                actionTd.appendChild(btn);
+                                tr.appendChild(actionTd);
+
+                                table.appendChild(tr);
+                        });
+                        if (!res.results.length) {
+                                var tr = document.createElement("tr");
+                                var td = document.createElement("td");
+                                td.colSpan = 8;
+                                td.textContent = "<%=translate("No entries")%>";
+                                tr.appendChild(td);
+                                table.appendChild(tr);
+                        }
+                        setFeedback("<%=translate("Scan complete.")%>", "notice");
+                });
+        };
+
+        // 通过 Ajax 导入候选网络
+        window.relaywatchImportCandidate = function(entry, btn) {
+                if (!entry || !entry.ssid)
+                        return setFeedback("<%=translate("Missing SSID information from scan result.")%>", "error");
+                if (btn) btn.disabled = true;
+                XHR.post("<%=import_url%>", {
+                        ssid: entry.ssid,
+                        bssid: entry.bssid || "",
+                        encryption: entry.encryption_suggestion || "",
+                        priority: ""
+                }, function(_, res) {
+                        if (btn) btn.disabled = false;
+                        if (!res) {
+                                return setFeedback("<%=translate("Import request failed.")%>", "error");
+                        }
+                        if (res.status === "exists") {
+                                return setFeedback("<%=translate("Candidate already exists.")%>", "notice");
+                        }
+                        if (res.status !== "ok") {
+                                return setFeedback("<%=translate("Import request failed.")%>", "error");
+                        }
+                        var msg = "<%=translate("Candidate imported. Please review the entry on the Candidates tab.")%>";
+                        if (res.needs_key) {
+                                msg += " " + "<%=translate("Remember to fill in the password for secured networks.")%>";
+                        }
+                        setFeedback(msg, "success");
+                });
+        };
 })();
 </script>

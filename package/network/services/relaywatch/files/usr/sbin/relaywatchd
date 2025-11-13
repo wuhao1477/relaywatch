@@ -1,11 +1,18 @@
 #!/bin/sh
 
+# 无线中继看门狗主脚本，负责健康检测、候选切换与状态维护。
+# 请在 OpenWrt 环境下运行，由 procd 守护。
+
 PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 
-. /lib/functions.sh
-. /lib/functions/network.sh
-. /usr/share/libubox/jshn.sh
+LIB_PREFIX="${RELAYWATCHD_LIB_PREFIX:-/lib}"
+UBOX_PREFIX="${RELAYWATCHD_UBOX_PREFIX:-/usr/share/libubox}"
 
+. "${LIB_PREFIX}/functions.sh"
+. "${LIB_PREFIX}/functions/network.sh"
+. "${UBOX_PREFIX}/jshn.sh"
+
+# 定义运行时状态目录以及关键状态文件
 STATE_DIR="/var/run/relaywatch"
 STATE_FILE="$STATE_DIR/state.json"
 PID_FILE="$STATE_DIR/pid"
@@ -17,6 +24,7 @@ LOG_SIZE_LIMIT=$((128 * 1024))
 CHECK_INTERVAL=30
 FAIL_THRESHOLD=3
 SWITCH_COOLDOWN=120
+SWITCH_BACKOFF_MAX=900
 BLACKLIST_TIME=600
 DHCP_RENEW=1
 
@@ -29,11 +37,21 @@ CHECK_TARGETS="1.1.1.1,8.8.8.8"
 
 CURRENT_FAILS=0
 LAST_SWITCH=0
+NEXT_SWITCH_ALLOWED=0
 CURRENT_SSID=""
 CURRENT_BSSID=""
 CURRENT_SECTION=""
 CURRENT_CANDIDATE_KEY=""
 LAST_GOOD_KEY=""
+FAIL_ROUNDS=0
+
+STATE_SIGNAL=""
+STATE_NOISE=""
+STATE_BITRATE=""
+STATE_QUALITY=""
+STATE_IPV4=""
+STATE_IPV6=""
+STATE_IFNAME=""
 
 FORCE_CHECK=0
 GRACE_PERIOD=20
@@ -41,17 +59,77 @@ ASSOC_WAIT=20
 
 CANDIDATE_COUNT=0
 
+SCAN_CACHE_SOURCE="none"
+SCAN_CACHE_DEVICE=""
+SCAN_CACHE_TIMESTAMP=0
+SCAN_CACHE_JSON=""
+SCAN_CACHE_RAW=""
+SCAN_CACHE_TTL=${RELAYWATCHD_SCAN_TTL:-20}
+
+# --- 兼容性与外部依赖检测函数 ---
+
+has_ubus() {
+        command -v ubus >/dev/null 2>&1
+}
+
+has_jsonfilter() {
+        command -v jsonfilter >/dev/null 2>&1
+}
+
+wifi_reload_compat() {
+        command -v wifi >/dev/null 2>&1 || return 1
+        wifi reload >/dev/null 2>&1 && return 0
+        wifi up >/dev/null 2>&1 && return 0
+        return 1
+}
+
+renew_interface_compat() {
+        [ "$DHCP_RENEW" = "1" ] || return 0
+        if has_ubus; then
+                ubus call "network.interface.${GLOBAL_IFACE}" renew '{}' >/dev/null 2>&1 && return 0
+        fi
+        command -v ifup >/dev/null 2>&1 || return 0
+        ifup "$GLOBAL_IFACE" >/dev/null 2>&1
+}
+
+iface_up_status() {
+        if has_ubus; then
+                local status
+                status=$(ubus call "network.interface.${GLOBAL_IFACE}" status 2>/dev/null) || status=""
+                if [ -n "$status" ] && printf "%s" "$status" | grep -q '"up": true'; then
+                        return 0
+                fi
+        fi
+
+        if command -v ifstatus >/dev/null 2>&1; then
+                ifstatus "$GLOBAL_IFACE" 2>/dev/null | grep -q '"up": true' && return 0
+        fi
+
+        if command -v iwinfo >/dev/null 2>&1; then
+                local ifname assoc
+                ifname=$(get_sta_ifname) || ifname=""
+                if [ -n "$ifname" ]; then
+                        assoc=$(iwinfo "$ifname" assoclist 2>/dev/null)
+                        [ -n "$assoc" ] && return 0
+                fi
+        fi
+
+        return 1
+}
+
+# --- 基础工具函数 ---
+
 ensure_state_dir() {
-	mkdir -p "$STATE_DIR"
-	[ -f "$BLACKLIST_FILE" ] || : > "$BLACKLIST_FILE"
-	[ -f "$LOG_FILE" ] || : > "$LOG_FILE"
+        mkdir -p "$STATE_DIR"
+        [ -f "$BLACKLIST_FILE" ] || : > "$BLACKLIST_FILE"
+        [ -f "$LOG_FILE" ] || : > "$LOG_FILE"
 }
 
 rotate_log() {
-	[ -f "$LOG_FILE" ] || return
-	local size
-	size=$(wc -c < "$LOG_FILE" 2>/dev/null)
-	[ -n "$size" ] || return
+        [ -f "$LOG_FILE" ] || return
+        local size
+        size=$(wc -c < "$LOG_FILE" 2>/dev/null)
+        [ -n "$size" ] || return
 	if [ "$size" -gt "$LOG_SIZE_LIMIT" ]; then
 		tail -n 200 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null
 		mv "${LOG_FILE}.tmp" "$LOG_FILE"
@@ -59,25 +137,27 @@ rotate_log() {
 }
 
 log_msg() {
-	local level="$1"; shift
-	local msg="$*"
-	logger -t relaywatchd -p "daemon.${level}" "$msg"
-	printf "%s [%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$msg" >> "$LOG_FILE"
-	rotate_log
+        local level="$1"; shift
+        local msg="$*"
+        logger -t relaywatchd -p "daemon.${level}" "$msg"
+        printf "%s [%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$msg" >> "$LOG_FILE"
+        rotate_log
 }
 
+# 为 SSID/BSSID 组合生成唯一键值，方便黑名单与状态记录
 build_candidate_key() {
-	local ssid="$1"
-	local bssid="$2"
-	[ -n "$bssid" ] && printf "%s|%s" "$ssid" "$bssid" && return
-	printf "%s|any" "$ssid"
+        local ssid="$1"
+        local bssid="$2"
+        [ -n "$bssid" ] && printf "%s|%s" "$ssid" "$bssid" && return
+        printf "%s|any" "$ssid"
 }
 
+# 刷新黑名单，剔除已过期条目
 blacklist_refresh() {
-	local now tmp="$STATE_DIR/blacklist.tmp"
-	now=$(date +%s)
-	: > "$tmp"
-	BLACKLIST_ACTIVE=""
+        local now tmp="$STATE_DIR/blacklist.tmp"
+        now=$(date +%s)
+        : > "$tmp"
+        BLACKLIST_ACTIVE=""
 	[ -f "$BLACKLIST_FILE" ] || { mv "$tmp" "$BLACKLIST_FILE" 2>/dev/null; return; }
 	while read -r key expiry reason; do
 		[ -z "$key" ] && continue
@@ -90,11 +170,12 @@ blacklist_refresh() {
 	mv "$tmp" "$BLACKLIST_FILE" 2>/dev/null
 }
 
+# 判断候选是否仍在黑名单有效期内
 blacklist_contains() {
-	local key="$1"
-	for entry in $BLACKLIST_ACTIVE; do
-		local k="${entry%%:*}"
-		local rest="${entry#*:}"
+        local key="$1"
+        for entry in $BLACKLIST_ACTIVE; do
+                local k="${entry%%:*}"
+                local rest="${entry#*:}"
 		local expiry="${rest%%:*}"
 		if [ "$k" = "$key" ]; then
 			local now
@@ -104,45 +185,128 @@ blacklist_contains() {
 			fi
 		fi
 	done
-	return 1
+        return 1
 }
 
+# 将候选加入黑名单并记录原因
 blacklist_add() {
-	local key="$1"
-	local ttl="$2"
-	local reason="$3"
-	local now expiry
-	now=$(date +%s)
-	expiry=$((now + ttl))
-	echo "$key $expiry ${reason:-unknown}" >> "$BLACKLIST_FILE"
-	blacklist_refresh
-	log_msg warning "blacklist $key for ${ttl}s due to ${reason}"
+        local key="$1"
+        local ttl="$2"
+        local reason="$3"
+        local now expiry
+        now=$(date +%s)
+        expiry=$((now + ttl))
+        echo "$key $expiry ${reason:-unknown}" >> "$BLACKLIST_FILE"
+        blacklist_refresh
+        log_msg warning "blacklist $key for ${ttl}s due to ${reason}"
 }
 
+# 重置/刷新扫描缓存，避免遍历候选时重复调用 iwinfo/ubus
+reset_scan_cache() {
+        SCAN_CACHE_SOURCE="none"
+        SCAN_CACHE_DEVICE=""
+        SCAN_CACHE_TIMESTAMP=0
+        SCAN_CACHE_JSON=""
+        SCAN_CACHE_RAW=""
+}
+
+refresh_scan_cache() {
+        local device="$1"
+        local now
+        now=$(date +%s)
+
+        if [ "$SCAN_CACHE_DEVICE" = "$device" ] && [ "$SCAN_CACHE_SOURCE" != "none" ]; then
+                if [ "$SCAN_CACHE_TIMESTAMP" -gt 0 ] 2>/dev/null && [ "$SCAN_CACHE_TTL" -gt 0 ] 2>/dev/null; then
+                        local age=$((now - SCAN_CACHE_TIMESTAMP))
+                        if [ "$age" -lt "$SCAN_CACHE_TTL" ]; then
+                                return 0
+                        fi
+                elif [ "$SCAN_CACHE_TTL" -le 0 ] 2>/dev/null; then
+                        # TTL<=0 表示每次都刷新缓存
+                        :
+                fi
+        fi
+
+        [ -n "$device" ] || { reset_scan_cache; return 1; }
+
+        local scan
+        if has_ubus && has_jsonfilter; then
+                scan=$(ubus call iwinfo scan "{\"device\":\"$device\"}" 2>/dev/null) || scan=""
+                if [ -n "$scan" ]; then
+                        SCAN_CACHE_SOURCE="ubus"
+                        SCAN_CACHE_DEVICE="$device"
+                        SCAN_CACHE_TIMESTAMP="$now"
+                        SCAN_CACHE_JSON="$scan"
+                        SCAN_CACHE_RAW=""
+                        return 0
+                fi
+        fi
+
+        if command -v iwinfo >/dev/null 2>&1; then
+                scan=$(iwinfo "$device" scan 2>/dev/null) || scan=""
+                if [ -n "$scan" ]; then
+                        SCAN_CACHE_SOURCE="iwinfo"
+                        SCAN_CACHE_DEVICE="$device"
+                        SCAN_CACHE_TIMESTAMP="$now"
+                        SCAN_CACHE_JSON=""
+                        SCAN_CACHE_RAW="$scan"
+                        return 0
+                fi
+        fi
+
+        reset_scan_cache
+        return 1
+}
+
+# 将当前事件写入状态文件供前端与 CLI 查询
 write_state() {
-	local event="$1"
-	local message="$2"
-	local now
-	now=$(date +%s)
-	json_init
-	json_add_int timestamp "$now"
-	json_add_string event "$event"
-	json_add_string message "$message"
-	json_add_string iface "$GLOBAL_IFACE"
+        local event="$1"
+        local message="$2"
+        local now
+        now=$(date +%s)
+
+        collect_runtime_metrics
+
+        json_init
+        json_add_int timestamp "$now"
+        json_add_string event "$event"
+        json_add_string message "$message"
+        json_add_string iface "$GLOBAL_IFACE"
 	json_add_string lan_bridge "$GLOBAL_LAN_BRIDGE"
 	json_add_string relayd_instance "$GLOBAL_RELAYD_INSTANCE"
 	json_add_int enabled "$GLOBAL_ENABLED"
 	json_add_int fail_count "$CURRENT_FAILS"
 	json_add_int last_switch "$LAST_SWITCH"
 	json_add_string current_ssid "$CURRENT_SSID"
-	json_add_string current_bssid "$CURRENT_BSSID"
-	json_add_string current_section "$CURRENT_SECTION"
-	json_add_string last_good_key "$LAST_GOOD_KEY"
-	json_add_array blacklist
-	for entry in $BLACKLIST_ACTIVE; do
-		local key="${entry%%:*}"
-		local rest="${entry#*:}"
-		local expiry="${rest%%:*}"
+        json_add_string current_bssid "$CURRENT_BSSID"
+        json_add_string current_section "$CURRENT_SECTION"
+        json_add_string last_good_key "$LAST_GOOD_KEY"
+        json_add_string signal "$STATE_SIGNAL"
+        json_add_string noise "$STATE_NOISE"
+        json_add_string bitrate "$STATE_BITRATE"
+        json_add_string quality "$STATE_QUALITY"
+        json_add_string ipv4 "$STATE_IPV4"
+        json_add_string ipv6 "$STATE_IPV6"
+        json_add_string ifname "$STATE_IFNAME"
+        json_add_int fail_rounds "$FAIL_ROUNDS"
+        json_add_int next_switch_allowed "$NEXT_SWITCH_ALLOWED"
+        if [ "$NEXT_SWITCH_ALLOWED" -gt "$now" ]; then
+                json_add_int cooldown_remaining $((NEXT_SWITCH_ALLOWED - now))
+        else
+                json_add_int cooldown_remaining 0
+        fi
+        local ttl_value=0
+        case "$SCAN_CACHE_TTL" in
+                -[0-9][0-9]*|[0-9][0-9]*)
+                        ttl_value="$SCAN_CACHE_TTL"
+                ;;
+        esac
+        json_add_int scan_cache_ttl "$ttl_value"
+        json_add_array blacklist
+        for entry in $BLACKLIST_ACTIVE; do
+                local key="${entry%%:*}"
+                local rest="${entry#*:}"
+                local expiry="${rest%%:*}"
 		local reason="${entry##*:}"
 		json_add_object ""
 		json_add_string key "$key"
@@ -154,26 +318,30 @@ write_state() {
 	json_dump > "$STATE_FILE"
 }
 
+# 读取全局配置段，设置守护进程参数
 load_global() {
-	local section="$1"
-	config_get_bool GLOBAL_ENABLED "$section" enabled 0
-	config_get GLOBAL_IFACE "$section" iface "wwan"
-	config_get GLOBAL_LAN_BRIDGE "$section" lan_bridge "br-lan"
+        local section="$1"
+        config_get_bool GLOBAL_ENABLED "$section" enabled 0
+        config_get GLOBAL_IFACE "$section" iface "wwan"
+        config_get GLOBAL_LAN_BRIDGE "$section" lan_bridge "br-lan"
 	config_get GLOBAL_RELAYD_INSTANCE "$section" relayd_instance "bridge"
 	config_get CHECK_METHODS "$section" check_method "ping"
 	config_get CHECK_TARGETS "$section" check_target "1.1.1.1,8.8.8.8"
-	config_get CHECK_INTERVAL "$section" check_interval 30
-	config_get FAIL_THRESHOLD "$section" fail_threshold 3
-	config_get SWITCH_COOLDOWN "$section" switch_cooldown 120
-	config_get BLACKLIST_TIME "$section" blacklist_time 600
-	config_get_bool DHCP_RENEW "$section" dhcp_renew 1
+        config_get CHECK_INTERVAL "$section" check_interval 30
+        config_get FAIL_THRESHOLD "$section" fail_threshold 3
+        config_get SWITCH_COOLDOWN "$section" switch_cooldown 120
+        config_get SWITCH_BACKOFF_MAX "$section" switch_backoff_max 900
+        config_get BLACKLIST_TIME "$section" blacklist_time 600
+        config_get_bool DHCP_RENEW "$section" dhcp_renew 1
+        config_get SCAN_CACHE_TTL "$section" scan_cache_ttl "$SCAN_CACHE_TTL"
 }
 
+# 读取候选网络参数，缓存到内存变量
 load_candidate() {
-	local section="$1"
-	local disabled ssid encryption key priority bssid
-	config_get_bool disabled "$section" disabled 0
-	[ "$disabled" = "1" ] && return
+        local section="$1"
+        local disabled ssid encryption key priority bssid
+        config_get_bool disabled "$section" disabled 0
+        [ "$disabled" = "1" ] && return
 	config_get ssid "$section" ssid
 	[ -z "$ssid" ] && return
 	config_get encryption "$section" encryption "none"
@@ -190,37 +358,42 @@ load_candidate() {
 	CANDIDATE_COUNT=$((CANDIDATE_COUNT + 1))
 }
 
+# 重新加载全部配置，供循环内热更新
 load_config() {
-	CANDIDATE_COUNT=0
-	config_load relaywatch
-	config_foreach load_candidate candidate
-	config_foreach load_global relaywatch
+        CANDIDATE_COUNT=0
+        config_load relaywatch
+        config_foreach load_candidate candidate
+        config_foreach load_global relaywatch
 }
 
+# 将逗号或空格分隔的列表拆解为逐行输出
 split_list() {
-	echo "$1" | tr ', ' '\n' | sed '/^$/d'
+        echo "$1" | tr ', ' '\n' | sed '/^$/d'
 }
 
+# 逐个目标执行 ping，任何一个成功则判定健康
 check_ping_targets() {
-	local target
-	for target in $(split_list "$CHECK_TARGETS"); do
-		ping -c 1 -W 3 "$target" >/dev/null 2>&1 && return 0
-	done
-	return 1
+        local target
+        for target in $(split_list "$CHECK_TARGETS"); do
+                ping -c 1 -W 3 "$target" >/dev/null 2>&1 && return 0
+        done
+        return 1
 }
 
+# 通过 uclient-fetch 进行 HTTP 探测
 check_http_targets() {
-	local target
-	for target in $(split_list "$CHECK_TARGETS"); do
-		uclient-fetch -q -O /dev/null -T 5 "$target" >/dev/null 2>&1 && return 0
-	done
-	return 1
+        local target
+        for target in $(split_list "$CHECK_TARGETS"); do
+                uclient-fetch -q -O /dev/null -T 5 "$target" >/dev/null 2>&1 && return 0
+        done
+        return 1
 }
 
+# 根据配置组合执行多种健康检测方法
 perform_connectivity_check() {
-	local method success=1
-	for method in $(split_list "$CHECK_METHODS"); do
-		case "$method" in
+        local method success=1
+        for method in $(split_list "$CHECK_METHODS"); do
+                case "$method" in
 			ping)
 				if check_ping_targets; then
 					success=0
@@ -238,11 +411,12 @@ perform_connectivity_check() {
 	return "$success"
 }
 
+# 按优先级降序返回候选索引列表
 get_sorted_candidate_ids() {
-	[ "$CANDIDATE_COUNT" -eq 0 ] && return
-	local idx list=""
-	idx=0
-	while [ "$idx" -lt "$CANDIDATE_COUNT" ]; do
+        [ "$CANDIDATE_COUNT" -eq 0 ] && return
+        local idx list=""
+        idx=0
+        while [ "$idx" -lt "$CANDIDATE_COUNT" ]; do
 		eval "prio=\${CAND_PRIORITY_$idx}"
 		list="$list $prio:$idx"
 		idx=$((idx + 1))
@@ -250,10 +424,11 @@ get_sorted_candidate_ids() {
 	echo "$list" | tr ' ' '\n' | grep -v '^$' | sort -t: -k1,1nr | cut -d: -f2
 }
 
+# 从候选列表中挑选下一个可尝试的网络
 select_next_candidate() {
-	local sorted idx key
-	sorted=$(get_sorted_candidate_ids)
-	[ -z "$sorted" ] && return 1
+        local sorted idx key
+        sorted=$(get_sorted_candidate_ids)
+        [ -z "$sorted" ] && return 1
 	for idx in $sorted; do
 		eval "ssid=\${CAND_SSID_$idx}"
 		eval "bssid=\${CAND_BSSID_$idx}"
@@ -270,10 +445,11 @@ select_next_candidate() {
 	return 1
 }
 
+# 通过 SSID 或配置段名称查找候选索引
 find_candidate_by_token() {
-	local token="$1"
-	local idx=0
-	while [ "$idx" -lt "$CANDIDATE_COUNT" ]; do
+        local token="$1"
+        local idx=0
+        while [ "$idx" -lt "$CANDIDATE_COUNT" ]; do
 		eval "ssid=\${CAND_SSID_$idx}"
 		eval "section=\${CAND_SECTION_$idx}"
 		if [ "$token" = "$ssid" ] || [ "$token" = "$section" ]; then
@@ -285,10 +461,11 @@ find_candidate_by_token() {
 	return 1
 }
 
+# 通过内部键值查找候选索引
 find_candidate_by_key() {
-	local target="$1"
-	local idx=0
-	while [ "$idx" -lt "$CANDIDATE_COUNT" ]; do
+        local target="$1"
+        local idx=0
+        while [ "$idx" -lt "$CANDIDATE_COUNT" ]; do
 		eval "ssid=\${CAND_SSID_$idx}"
 		eval "bssid=\${CAND_BSSID_$idx}"
 		local key
@@ -299,12 +476,140 @@ find_candidate_by_key() {
 		fi
 		idx=$((idx + 1))
 	done
-	return 1
+return 1
+}
+
+# --- 候选网络应用逻辑 ---
+
+# 查询 STA 接口对应的物理设备名称
+get_sta_ifname() {
+        local ifname=""
+        network_get_device ifname "$GLOBAL_IFACE"
+        if [ -n "$ifname" ]; then
+                echo "$ifname"
+                return 0
+        fi
+
+        ifname=$(uci -q get "wireless.${GLOBAL_IFACE}.ifname")
+        if [ -n "$ifname" ]; then
+                echo "$ifname"
+                return 0
+        fi
+
+        return 1
+}
+
+# 收集当前连接的信号、速率、IP 等指标，供状态展示
+collect_runtime_metrics() {
+        STATE_SIGNAL=""
+        STATE_NOISE=""
+        STATE_BITRATE=""
+        STATE_QUALITY=""
+        STATE_IPV4=""
+        STATE_IPV6=""
+        STATE_IFNAME=""
+
+        local ifname
+        ifname=$(get_sta_ifname) || return
+        [ -n "$ifname" ] || return
+        STATE_IFNAME="$ifname"
+
+        if has_ubus && has_jsonfilter; then
+                local assoc
+                assoc=$(ubus call iwinfo assoclist "{\"device\":\"$ifname\"}") 2>/dev/null || assoc=""
+                if [ -n "$assoc" ]; then
+                        STATE_SIGNAL=$(jsonfilter -s "$assoc" -e '@.results[0].signal' 2>/dev/null)
+                        if [ -n "$STATE_SIGNAL" ]; then
+                                STATE_SIGNAL="$STATE_SIGNAL dBm"
+                        fi
+                        local tx
+                        tx=$(jsonfilter -s "$assoc" -e '@.results[0].tx_rate' 2>/dev/null)
+                        local rx
+                        rx=$(jsonfilter -s "$assoc" -e '@.results[0].rx_rate' 2>/dev/null)
+                        if [ -n "$tx" ] && [ -n "$rx" ]; then
+                                STATE_BITRATE="TX ${tx} Mbit/s, RX ${rx} Mbit/s"
+                        elif [ -n "$tx" ]; then
+                                STATE_BITRATE="TX ${tx} Mbit/s"
+                        elif [ -n "$rx" ]; then
+                                STATE_BITRATE="RX ${rx} Mbit/s"
+                        fi
+                fi
+
+                local netjson
+                netjson=$(ubus call "network.interface.${GLOBAL_IFACE}" status 2>/dev/null) || netjson=""
+                if [ -n "$netjson" ]; then
+                        STATE_IPV4=$(jsonfilter -s "$netjson" -e '@["ipv4-address"][0].address' 2>/dev/null)
+                        STATE_IPV6=$(jsonfilter -s "$netjson" -e '@["ipv6-address"][0].address' 2>/dev/null)
+                fi
+        fi
+
+        if command -v iwinfo >/dev/null 2>&1; then
+                local info
+                info=$(iwinfo "$ifname" info 2>/dev/null)
+                if [ -n "$info" ]; then
+                        [ -z "$STATE_SIGNAL" ] && STATE_SIGNAL=$(printf "%s" "$info" | awk -F': ' '/Signal:/ {print $2; exit}' | tr -d '\r')
+                        STATE_NOISE=$(printf "%s" "$info" | awk -F': ' '/Noise:/ {print $2; exit}' | tr -d '\r')
+                        if [ -z "$STATE_BITRATE" ]; then
+                                local rate
+                                rate=$(printf "%s" "$info" | awk -F': ' '/Bit Rate:/ {print $2; exit}' | tr -d '\r')
+                                STATE_BITRATE="$rate"
+                        fi
+                        local quality
+                        quality=$(printf "%s" "$info" | awk -F': ' '/Link Quality:/ {print $2; exit}' | tr -d '\r')
+                        STATE_QUALITY="$quality"
+                fi
+        fi
+}
+
+# 通过 ubus/iwinfo 扫描校验候选是否可见
+validate_candidate_presence() {
+        local idx="$1"
+        eval "ssid=\${CAND_SSID_$idx}"
+        eval "bssid=\${CAND_BSSID_$idx}"
+
+        [ -z "$ssid" ] && return 2
+
+        local ifname
+        ifname=$(get_sta_ifname) || ifname=""
+        [ -n "$ifname" ] || return 2
+
+        if ! refresh_scan_cache "$ifname"; then
+                return 2
+        fi
+
+        case "$SCAN_CACHE_SOURCE" in
+                ubus)
+                        local scan="$SCAN_CACHE_JSON"
+                        local match=""
+                        if [ -n "$bssid" ]; then
+                                local target
+                                target=$(printf "%s" "$bssid" | tr 'a-z' 'A-Z')
+                                match=$(jsonfilter -s "$scan" -e "@.results[@.bssid='$target'].bssid" 2>/dev/null)
+                        else
+                                match=$(jsonfilter -s "$scan" -e "@.results[@.ssid='$ssid'].ssid" 2>/dev/null)
+                        fi
+                        [ -n "$match" ] && return 0
+                        return 1
+                ;;
+                iwinfo)
+                        local scan="$SCAN_CACHE_RAW"
+                        if [ -n "$bssid" ]; then
+                                local target
+                                target=$(printf "%s" "$bssid" | tr 'a-z' 'A-Z')
+                                printf "%s\n" "$scan" | grep -qi "Address: $target" && return 0
+                        else
+                                printf "%s\n" "$scan" | grep -F "ESSID: \"$ssid\"" >/dev/null 2>&1 && return 0
+                        fi
+                        return 1
+                ;;
+        esac
+
+        return 2
 }
 
 apply_candidate() {
-	local idx="$1"
-	eval "ssid=\${CAND_SSID_$idx}"
+        local idx="$1"
+        eval "ssid=\${CAND_SSID_$idx}"
 	eval "bssid=\${CAND_BSSID_$idx}"
 	eval "enc=\${CAND_ENC_$idx}"
 	eval "key=\${CAND_KEY_$idx}"
@@ -312,8 +617,18 @@ apply_candidate() {
 	local key_id
 	key_id=$(build_candidate_key "$ssid" "$bssid")
 
-	log_msg info "applying candidate $section ($ssid)"
-	uci -q set "wireless.${GLOBAL_IFACE}.ssid=$ssid"
+        log_msg info "applying candidate $section ($ssid)"
+
+        local validate_rc
+        validate_rc=$(validate_candidate_presence "$idx")
+        case "$validate_rc" in
+                1)
+                        log_msg warning "candidate $ssid not visible in scan, skip"
+                        return 2
+                ;;
+        esac
+
+        uci -q set "wireless.${GLOBAL_IFACE}.ssid=$ssid"
 	uci -q set "wireless.${GLOBAL_IFACE}.encryption=$enc"
 	if [ -n "$key" ]; then
 		uci -q set "wireless.${GLOBAL_IFACE}.key=$key"
@@ -327,22 +642,19 @@ apply_candidate() {
 	fi
 	uci -q commit wireless
 
-	if command -v wifi >/dev/null 2>&1; then
-		wifi reload >/dev/null 2>&1 || wifi up >/dev/null 2>&1
-	fi
+        wifi_reload_compat
+        reset_scan_cache
 
-	ifup "$GLOBAL_IFACE" >/dev/null 2>&1
-	[ -n "$GLOBAL_LAN_BRIDGE" ] && ifup "$GLOBAL_LAN_BRIDGE" >/dev/null 2>&1
-	[ -n "$GLOBAL_RELAYD_INSTANCE" ] && ifup "$GLOBAL_RELAYD_INSTANCE" >/dev/null 2>&1
+        ifup "$GLOBAL_IFACE" >/dev/null 2>&1
+        [ -n "$GLOBAL_LAN_BRIDGE" ] && ifup "$GLOBAL_LAN_BRIDGE" >/dev/null 2>&1
+        [ -n "$GLOBAL_RELAYD_INSTANCE" ] && ifup "$GLOBAL_RELAYD_INSTANCE" >/dev/null 2>&1
 
-	if [ "$DHCP_RENEW" = "1" ]; then
-		ubus call "network.interface.${GLOBAL_IFACE}" renew '{}' >/dev/null 2>&1
-	fi
+        renew_interface_compat
 
-	if ! wait_for_assoc "$ASSOC_WAIT"; then
-		log_msg err "association timeout for $ssid"
-		return 1
-	fi
+        if ! wait_for_assoc "$ASSOC_WAIT"; then
+                log_msg err "association timeout for $ssid"
+                return 1
+        fi
 
 	if ! perform_grace_health_check; then
 		log_msg err "candidate $ssid failed grace health check"
@@ -360,27 +672,29 @@ apply_candidate() {
 	return 0
 }
 
+# 轮询网络接口状态，等待 STA 完成关联
 wait_for_assoc() {
-	local timeout="$1"
-	local start now
-	start=$(date +%s)
-	while true; do
-		if ubus call "network.interface.${GLOBAL_IFACE}" status 2>/dev/null | grep -q '"up": true'; then
-			return 0
-		fi
-		now=$(date +%s)
-		if [ $((now - start)) -ge "$timeout" ]; then
-			return 1
+        local timeout="$1"
+        local start now
+        start=$(date +%s)
+        while true; do
+                if iface_up_status; then
+                        return 0
+                fi
+                now=$(date +%s)
+                if [ $((now - start)) -ge "$timeout" ]; then
+                        return 1
 		fi
 		sleep 2
 	done
 }
 
+# 切换后进入宽限期内多次验证连通性
 perform_grace_health_check() {
-	local start now
-	start=$(date +%s)
-	while true; do
-		if perform_connectivity_check; then
+        local start now
+        start=$(date +%s)
+        while true; do
+                if perform_connectivity_check; then
 			return 0
 		fi
 		now=$(date +%s)
@@ -391,77 +705,118 @@ perform_grace_health_check() {
 	done
 }
 
+# 核心切换逻辑：选择候选并尝试连接
 maybe_switch_candidate() {
-	local now
-	now=$(date +%s)
-	if [ "$SWITCH_COOLDOWN" -gt 0 ] && [ "$LAST_SWITCH" -ne 0 ] && [ $((now - LAST_SWITCH)) -lt "$SWITCH_COOLDOWN" ]; then
-		log_msg info "cooldown prevents switch (remaining $((SWITCH_COOLDOWN - (now - LAST_SWITCH)))s)"
-		return 1
-	fi
+        local now
+        now=$(date +%s)
+        if [ "$NEXT_SWITCH_ALLOWED" -gt 0 ] && [ "$now" -lt "$NEXT_SWITCH_ALLOWED" ]; then
+                log_msg info "backoff prevents switch (remaining $((NEXT_SWITCH_ALLOWED - now))s)"
+                return 1
+        fi
 
-	blacklist_refresh
-	local idx sorted tried=0
+        blacklist_refresh
+        local idx sorted tried=0
 	sorted=$(get_sorted_candidate_ids)
 	if [ -z "$sorted" ]; then
 		log_msg err "no candidate configured"
 		return 1
 	fi
 
-	for idx in $sorted; do
-		eval "ssid=\${CAND_SSID_$idx}"
-		eval "bssid=\${CAND_BSSID_$idx}"
-		local key
-		key=$(build_candidate_key "$ssid" "$bssid")
+        for idx in $sorted; do
+                eval "ssid=\${CAND_SSID_$idx}"
+                eval "bssid=\${CAND_BSSID_$idx}"
+                local key
+                key=$(build_candidate_key "$ssid" "$bssid")
 		if blacklist_contains "$key"; then
 			continue
 		fi
-		tried=$((tried + 1))
-		if apply_candidate "$idx"; then
-			log_msg info "switched to candidate $ssid"
-			return 0
-		fi
-		if [ "$BLACKLIST_TIME" -gt 0 ] 2>/dev/null; then
-			blacklist_add "$key" "$BLACKLIST_TIME" "grace_failed"
-		fi
+                tried=$((tried + 1))
+                if apply_candidate "$idx"; then
+                        local ts
+                        ts=$(date +%s)
+                        LAST_SWITCH="$ts"
+                        FAIL_ROUNDS=0
+                        if [ "$SWITCH_COOLDOWN" -gt 0 ] 2>/dev/null; then
+                                NEXT_SWITCH_ALLOWED=$((ts + SWITCH_COOLDOWN))
+                        else
+                                NEXT_SWITCH_ALLOWED=$ts
+                        fi
+                        log_msg info "switched to candidate $ssid"
+                        return 0
+                fi
+                local rc=$?
+                if [ "$rc" -eq 2 ]; then
+                        log_msg info "skip blacklist for invisible candidate $ssid"
+                        continue
+                fi
+                if [ "$BLACKLIST_TIME" -gt 0 ] 2>/dev/null; then
+                        blacklist_add "$key" "$BLACKLIST_TIME" "grace_failed"
+                fi
 	done
 
-	if [ "$tried" -eq 0 ]; then
-		log_msg err "all candidates blacklisted or unavailable"
-	fi
+        if [ "$tried" -eq 0 ]; then
+                log_msg err "all candidates blacklisted or unavailable"
+        fi
 
-	if [ -n "$LAST_GOOD_KEY" ] && ! blacklist_contains "$LAST_GOOD_KEY"; then
-		local rollback_idx
-		rollback_idx=$(find_candidate_by_key "$LAST_GOOD_KEY") && {
-			if apply_candidate "$rollback_idx"; then
-				log_msg warning "rolled back to last known good candidate"
-				return 0
-			fi
-		}
-	fi
+        FAIL_ROUNDS=$((FAIL_ROUNDS + 1))
+        local base
+        base=$SWITCH_COOLDOWN
+        if [ -z "$base" ] || [ "$base" -le 0 ] 2>/dev/null; then
+                base=$CHECK_INTERVAL
+        fi
+        local multiplier=$((1 << (FAIL_ROUNDS - 1)))
+        [ "$multiplier" -le 0 ] && multiplier=1
+        local backoff=$((base * multiplier))
+        if [ "$SWITCH_BACKOFF_MAX" -gt 0 ] 2>/dev/null && [ "$backoff" -gt "$SWITCH_BACKOFF_MAX" ]; then
+                backoff=$SWITCH_BACKOFF_MAX
+        fi
+        NEXT_SWITCH_ALLOWED=$((now + backoff))
+
+        if [ -n "$LAST_GOOD_KEY" ] && ! blacklist_contains "$LAST_GOOD_KEY"; then
+                local rollback_idx
+                rollback_idx=$(find_candidate_by_key "$LAST_GOOD_KEY") && {
+                        if apply_candidate "$rollback_idx"; then
+                                local ts
+                                ts=$(date +%s)
+                                LAST_SWITCH="$ts"
+                                FAIL_ROUNDS=0
+                                if [ "$SWITCH_COOLDOWN" -gt 0 ] 2>/dev/null; then
+                                        NEXT_SWITCH_ALLOWED=$((ts + SWITCH_COOLDOWN))
+                                else
+                                        NEXT_SWITCH_ALLOWED=$ts
+                                fi
+                                log_msg warning "rolled back to last known good candidate"
+                                return 0
+                        fi
+                }
+        fi
 
 	write_state "switch_failed" "no viable candidate"
 
 	return 1
 }
 
+# 守护主循环：定时检测并根据结果切换
 run_loop() {
-	ensure_state_dir
-	echo "$$" > "$PID_FILE"
-	trap 'FORCE_CHECK=1' USR1
-	trap 'rm -f "$PID_FILE"; exit 0' INT TERM
+        ensure_state_dir
+        echo "$$" > "$PID_FILE"
+        trap 'FORCE_CHECK=1' USR1
+        trap 'rm -f "$PID_FILE"; exit 0' INT TERM
 
 	load_config
 	blacklist_refresh
 
 	CURRENT_SSID=$(uci -q get "wireless.${GLOBAL_IFACE}.ssid")
-	CURRENT_BSSID=$(uci -q get "wireless.${GLOBAL_IFACE}.bssid")
-	CURRENT_CANDIDATE_KEY=$(build_candidate_key "$CURRENT_SSID" "$CURRENT_BSSID")
-	LAST_GOOD_KEY="$CURRENT_CANDIDATE_KEY"
+        CURRENT_BSSID=$(uci -q get "wireless.${GLOBAL_IFACE}.bssid")
+        CURRENT_CANDIDATE_KEY=$(build_candidate_key "$CURRENT_SSID" "$CURRENT_BSSID")
+        LAST_GOOD_KEY="$CURRENT_CANDIDATE_KEY"
+        NEXT_SWITCH_ALLOWED=0
+        FAIL_ROUNDS=0
 
-	local slept disabled_logged=0
-	while true; do
-		load_config
-		blacklist_refresh
+        local slept disabled_logged=0
+        while true; do
+                load_config
+                blacklist_refresh
 
 		if [ "$GLOBAL_ENABLED" -ne 1 ]; then
 			if [ "$disabled_logged" -eq 0 ]; then
@@ -475,13 +830,14 @@ run_loop() {
 
 		disabled_logged=0
 
-			if perform_connectivity_check; then
-				if [ "$CURRENT_FAILS" -gt 0 ]; then
-					log_msg info "connectivity restored after ${CURRENT_FAILS} failures"
-				fi
-				CURRENT_FAILS=0
-				write_state "healthy" "connectivity ok"
-		else
+                        if perform_connectivity_check; then
+                                if [ "$CURRENT_FAILS" -gt 0 ]; then
+                                        log_msg info "connectivity restored after ${CURRENT_FAILS} failures"
+                                fi
+                                CURRENT_FAILS=0
+                                FAIL_ROUNDS=0
+                                write_state "healthy" "connectivity ok"
+                else
 			CURRENT_FAILS=$((CURRENT_FAILS + 1))
 			log_msg warning "connectivity check failed (${CURRENT_FAILS}/${FAIL_THRESHOLD})"
 			write_state "degraded" "checks failing"
@@ -503,43 +859,58 @@ run_loop() {
 	done
 }
 
+# CLI 入口：手动切换至指定候选
 manual_switch() {
-	local token="$1"
-	load_config
-	local idx
-	idx=$(find_candidate_by_token "$token") || {
-		echo "candidate $token not found" >&2
-		return 1
-	}
-	if apply_candidate "$idx"; then
-		log_msg info "manual switch to $token successful"
-		return 0
-	fi
-	return 1
+        local token="$1"
+        ensure_state_dir
+        load_config
+        local idx
+        idx=$(find_candidate_by_token "$token") || {
+                echo "candidate $token not found" >&2
+                return 1
+        }
+        if apply_candidate "$idx"; then
+                log_msg info "manual switch to $token successful"
+                local ts
+                ts=$(date +%s)
+                if [ "$SWITCH_COOLDOWN" -gt 0 ] 2>/dev/null; then
+                        NEXT_SWITCH_ALLOWED=$((ts + SWITCH_COOLDOWN))
+                else
+                        NEXT_SWITCH_ALLOWED=$ts
+                fi
+                FAIL_ROUNDS=0
+                return 0
+        fi
+        return 1
 }
 
+# CLI 入口：执行一次即时健康检查
 manual_check() {
-	load_config
-	if perform_connectivity_check; then
-		echo "ok"
-		return 0
-	fi
-	echo "fail"
-	return 1
+        ensure_state_dir
+        load_config
+        if perform_connectivity_check; then
+                echo "ok"
+                return 0
+        fi
+        echo "fail"
+        return 1
 }
 
+# 热插拔钩子通知：记录事件并触发快速检测
 hotplug_notify() {
-	local action="$1"
-	local device="$2"
-	log_msg info "hotplug wireless action=$action device=$device"
-	echo "{\"action\":\"$action\",\"device\":\"$device\",\"timestamp\":$(date +%s)}" > "$HOTPLUG_FILE"
-	if [ -f "$PID_FILE" ]; then
-		kill -USR1 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null
-	fi
+        local action="$1"
+        local device="$2"
+        ensure_state_dir
+        log_msg info "hotplug wireless action=$action device=$device"
+        echo "{\"action\":\"$action\",\"device\":\"$device\",\"timestamp\":$(date +%s)}" > "$HOTPLUG_FILE"
+        if [ -f "$PID_FILE" ]; then
+                kill -USR1 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null
+        fi
 }
 
+# 打印帮助信息
 usage() {
-	cat <<'EOF'
+        cat <<'EOF'
 Usage: relaywatchd [options]
   (no args)        Run daemon (background loop)
   -f, --foreground Run daemon in foreground
@@ -551,13 +922,17 @@ Usage: relaywatchd [options]
 EOF
 }
 
+if [ "${RELAYWATCHD_TEST_MODE:-0}" = "1" ]; then
+        return 0 2>/dev/null || exit 0
+fi
+
 case "$1" in
-	"")
-		run_loop
-	;;
-	-f|--foreground)
-		run_loop
-	;;
+        "")
+                run_loop
+        ;;
+        -f|--foreground)
+                run_loop
+        ;;
 	--check)
 		manual_check
 	;;
