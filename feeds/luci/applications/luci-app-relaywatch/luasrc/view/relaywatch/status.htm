@@ -1,4 +1,5 @@
 <%+
+-- LuCI 状态页视图，负责展示守护进程状态、日志与操作按钮
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local jsonc = require "luci.jsonc"
@@ -84,9 +85,9 @@ local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
 </div>
 
 <div class="cbi-section">
-	<h3><%=translate("Status Actions")%></h3>
-	<div id="relaywatch-feedback" class="alert-message" style="display:none;"></div>
-	<div class="cbi-value">
+        <h3><%=translate("Status Actions")%></h3>
+        <div id="relaywatch-feedback" class="alert-message" style="display:none;"></div>
+        <div class="cbi-value">
 		<button class="cbi-button cbi-button-apply" onclick="relaywatchRunCheck(this)"><%=translate("Trigger Immediate Check")%></button>
 		<button class="cbi-button cbi-button-reset" onclick="location.reload()"><%=translate("Refresh")%></button>
 	</div>
@@ -159,29 +160,31 @@ local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
 (function() {
 	"use strict";
 
-	function setFeedback(message, level) {
-		var box = document.getElementById("relaywatch-feedback");
-		if (!box)
-			return;
+        function setFeedback(message, level) {
+                var box = document.getElementById("relaywatch-feedback");
+                if (!box)
+                        return;
 		box.style.display = "block";
 		box.className = "alert-message " + (level || "notice");
 		box.textContent = message;
 	}
 
-	window.relaywatchRunCheck = function(btn) {
-		if (btn) btn.disabled = true;
-		XHR.get("<%=check_url%>", null, function(_, res) {
-			if (btn) btn.disabled = false;
+        // 触发一次后台健康检查
+        window.relaywatchRunCheck = function(btn) {
+                if (btn) btn.disabled = true;
+                XHR.get("<%=check_url%>", null, function(_, res) {
+                        if (btn) btn.disabled = false;
 			if (!res || res.status !== "ok")
 				return setFeedback("<%=translate("Health check failed")%>", "error");
 			setFeedback("<%=translate("Health check succeeded")%>", "success");
 		});
 	};
 
-	window.relaywatchManualSwitch = function(btn) {
-		var token = document.getElementById("relaywatch-switch-token").value.trim();
-		if (!token)
-			return setFeedback("<%=translate("Please provide a target SSID or section name.")%>", "warning");
+        // 手动切换到指定候选
+        window.relaywatchManualSwitch = function(btn) {
+                var token = document.getElementById("relaywatch-switch-token").value.trim();
+                if (!token)
+                        return setFeedback("<%=translate("Please provide a target SSID or section name.")%>", "warning");
 		if (btn) btn.disabled = true;
 		XHR.post("<%=switch_url%>", { token: token }, function(_, res) {
 			if (btn) btn.disabled = false;
@@ -191,9 +194,10 @@ local scan_url = dispatcher.build_url("admin/network/relaywatch/action/scan")
 		});
 	};
 
-	window.relaywatchScan = function(btn) {
-		if (btn) btn.disabled = true;
-		XHR.get("<%=scan_url%>", null, function(_, res) {
+        // 执行周边网络扫描并填充结果表格
+        window.relaywatchScan = function(btn) {
+                if (btn) btn.disabled = true;
+                XHR.get("<%=scan_url%>", null, function(_, res) {
 			if (btn) btn.disabled = false;
 			if (!res || !res.results)
 				return setFeedback("<%=translate("Failed to scan for nearby networks.")%>", "error");
