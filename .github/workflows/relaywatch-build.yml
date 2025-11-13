@@ -42,6 +42,7 @@ jobs:
           import os
           import sys
           from pathlib import Path
+          from urllib import error, request
 
           DEFAULT_TARGETS = ["x86/64"]
           DEFAULT_VERSIONS = ["23.05.2", "22.03.5"]
@@ -129,7 +130,81 @@ jobs:
           if not versions:
               versions = config_versions or DEFAULT_VERSIONS
 
-          matrix = {"openwrt_version": versions, "target": targets}
+          def find_sdk_tarball(base_url: str):
+              """Return the SDK tarball name if present under base_url."""
+
+              def from_sha256sums():
+                  manifest_url = base_url.rstrip("/") + "/sha256sums"
+                  try:
+                      with request.urlopen(manifest_url) as resp:
+                          content = resp.read().decode()
+                  except error.HTTPError as exc:
+                      if exc.code in (401, 403, 404):
+                          return None
+                      raise
+                  except OSError:
+                      return None
+
+                  for line in content.splitlines():
+                      line = line.strip()
+                      if not line:
+                          continue
+                      parts = line.split()
+                      if not parts:
+                          continue
+                      candidate = parts[-1]
+                      if candidate.startswith("openwrt-sdk") and candidate.endswith(".tar.xz"):
+                          return candidate
+                  return None
+
+              def from_directory_listing():
+                  try:
+                      with request.urlopen(base_url.rstrip("/") + "/") as resp:
+                          html = resp.read().decode()
+                  except error.HTTPError as exc:
+                      if exc.code in (401, 403, 404):
+                          return None
+                      raise
+                  except OSError:
+                      return None
+
+                  for token in html.replace("'", '"').split('"'):
+                      if token.startswith("openwrt-sdk") and token.endswith(".tar.xz"):
+                          return token
+                  return None
+
+              for finder in (from_sha256sums, from_directory_listing):
+                  tarball = finder()
+                  if tarball:
+                      return tarball
+              return None
+
+          combinations = []
+          for version in versions:
+              for target in targets:
+                  if "/" not in target:
+                      print(f"跳过非法 target '{target}'，应为 <arch>/<subtarget> 格式", file=sys.stderr)
+                      continue
+                  arch_dir, subtarget = target.split("/", 1)
+                  if not arch_dir or not subtarget:
+                      print(f"跳过非法 target '{target}'，缺少架构或子目标", file=sys.stderr)
+                      continue
+                  base_url = f"https://downloads.openwrt.org/releases/{version}/targets/{arch_dir}/{subtarget}"
+                  try:
+                      tarball = find_sdk_tarball(base_url)
+                  except Exception as exc:  # noqa: BLE001 - surface real errors
+                      print(f"探测 {version} {target} SDK 失败: {exc}", file=sys.stderr)
+                      continue
+
+                  if tarball:
+                      combinations.append({"openwrt_version": version, "target": target})
+                  else:
+                      print(f"跳过 {version} 的 {target}，未找到可用的 SDK", file=sys.stderr)
+
+          if not combinations:
+              sys.exit("未找到任何可用的 OpenWrt SDK 组合，请检查配置。")
+
+          matrix = {"include": combinations}
           print(json.dumps(matrix))
           PY
           )

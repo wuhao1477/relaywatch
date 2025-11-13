@@ -20,6 +20,7 @@ feeds/luci/applications/luci-app-relaywatch/  # LuCI 前端
 
 ## 持续集成构建
 - GitHub Actions 工作流 `relaywatch-build` 会读取 `ci/default-matrix.json`，默认针对 `x86/64`、`armvirt/64`、`mediatek/filogic`、`ramips/mt7621` 与 `ath79/nand`（Atheros AR9344，MIPS 74Kc）等架构下载 OpenWrt SDK 并编译对应的 IPK 包。
+- 工作流会在发起构建前探测每个版本与架构组合，若官方镜像仓库没有对应 SDK，会自动跳过该组合并给出提示，避免下载阶段失败。
 - 如需调整默认编译目标，可修改上述 JSON 文件或在手动触发工作流时传入自定义 target/openwrt_version 列表。
 
 ## 安装部署
@@ -86,6 +87,7 @@ relaywatch is an OpenWrt-oriented solution that keeps wireless relay connections
 - `feeds/luci/applications/luci-app-relaywatch/`: LuCI front-end implementation.
 - `.cursor/plans/l-82b8a035.plan.md`: project plan and progress tracking.
 - `ci/default-matrix.json`: default GitHub Actions build matrix that covers x86/64, armvirt/64, mediatek/filogic, ramips/mt7621, and ath79/nand (Atheros AR9344, MIPS 74Kc) targets.
+- The workflow probes each OpenWrt version/target pair before scheduling builds; combinations without an official SDK are skipped with a warning so the pipeline stays green.
 
 ### Getting Started
 1. Place the repository under the OpenWrt source tree (same paths as above).
