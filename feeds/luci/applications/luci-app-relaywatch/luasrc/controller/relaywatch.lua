@@ -12,6 +12,51 @@ local ubus_call = util.ubus or function() return nil end
 local STATE_FILE = "/var/run/relaywatch/state.json"
 local LOG_FILE = "/var/log/relaywatch.log"
 
+local function normalize_encryption(enc)
+        if type(enc) ~= "table" then
+                return "none"
+        end
+
+        if enc.enabled == false then
+                return "none"
+        end
+
+        if enc.wep == true or (type(enc.authentication) == "string" and enc.authentication:lower():find("wep")) then
+                return "wep"
+        end
+
+        local has_wpa1, has_wpa2, has_wpa3
+        if type(enc.wpa_version) == "table" then
+                for _, v in ipairs(enc.wpa_version) do
+                        if v == 1 then
+                                has_wpa1 = true
+                        elseif v == 2 then
+                                has_wpa2 = true
+                        elseif v == 3 then
+                                has_wpa3 = true
+                        end
+                end
+        end
+
+        if has_wpa3 and has_wpa2 then
+                return "sae-mixed"
+        elseif has_wpa3 then
+                return "sae"
+        elseif has_wpa2 and has_wpa1 then
+                return "psk-mixed"
+        elseif has_wpa2 then
+                return "psk2"
+        elseif has_wpa1 then
+                return "psk"
+        end
+
+        if type(enc.authentication) == "string" and enc.authentication:lower():find("psk") then
+                return "psk"
+        end
+
+        return "none"
+end
+
 -- 解析守护进程绑定的 STA 接口配置段名称
 local function resolve_sta_section()
         return uci:get("relaywatch", "global", "iface") or "wwan"
@@ -47,8 +92,9 @@ function index()
 
 	entry({"admin", "network", "relaywatch", "action", "scan"}, call("action_scan")).leaf = true
 	entry({"admin", "network", "relaywatch", "action", "check"}, call("action_check")).leaf = true
-	entry({"admin", "network", "relaywatch", "action", "switch"}, call("action_switch")).leaf = true
-	entry({"admin", "network", "relaywatch", "action", "state"}, call("action_state")).leaf = true
+        entry({"admin", "network", "relaywatch", "action", "switch"}, call("action_switch")).leaf = true
+        entry({"admin", "network", "relaywatch", "action", "import"}, call("action_import")).leaf = true
+        entry({"admin", "network", "relaywatch", "action", "state"}, call("action_state")).leaf = true
 end
 
 -- 调用 iwinfo 扫描周边 AP，并将结果以 JSON 返回
@@ -73,18 +119,23 @@ function action_scan()
 	end
 
 	local list = iwinfo[t].scanlist(ifname) or {}
-	local result = {}
-	for _, ap in ipairs(list) do
-		result[#result + 1] = {
-			ssid = ap.ssid,
-			bssid = ap.bssid,
-			signal = ap.signal,
-			channel = ap.channel,
-			encryption = ap.encryption and ap.encryption.description or ""
-		}
-	end
+        local result = {}
+        for _, ap in ipairs(list) do
+                local suggestion = normalize_encryption(ap.encryption)
+                result[#result + 1] = {
+                        ssid = ap.ssid,
+                        bssid = ap.bssid,
+                        signal = ap.signal,
+                        noise = ap.noise,
+                        quality = ap.quality,
+                        quality_max = ap.quality_max,
+                        channel = ap.channel,
+                        encryption = ap.encryption and ap.encryption.description or "",
+                        encryption_suggestion = suggestion
+                }
+        end
 
-	http.write_json({ results = result, ifname = ifname })
+        http.write_json({ results = result, ifname = ifname })
 end
 
 -- 触发一次守护进程的即时健康检查
@@ -106,10 +157,76 @@ function action_switch()
 	end
 	local cmd = string.format("/usr/sbin/relaywatchd --switch %q >/dev/null 2>&1", token)
 	local rc = sys.call(cmd)
-	http.write_json({
-		status = (rc == 0) and "ok" or "fail",
-		token = token
-	})
+        http.write_json({
+                status = (rc == 0) and "ok" or "fail",
+                token = token
+        })
+end
+
+-- 根据扫描结果快速导入候选网络
+function action_import()
+        local ssid = http.formvalue("ssid") or ""
+        local bssid = http.formvalue("bssid") or ""
+        local encryption = http.formvalue("encryption") or ""
+        local priority = http.formvalue("priority") or ""
+        http.prepare_content("application/json")
+
+        if ssid == "" then
+            http.write_json({ status = "fail", message = "missing-ssid" })
+            return
+        end
+
+        if encryption == "" then
+                encryption = "none"
+        end
+
+        if bssid ~= "" then
+                bssid = bssid:upper()
+        end
+
+        local exists
+        uci:foreach("relaywatch", "candidate", function(s)
+                if s.ssid == ssid then
+                        local sbssid = (s.bssid or ""):lower()
+                        if bssid == "" or sbssid == bssid:lower() then
+                                exists = s[".name"]
+                                return false
+                        end
+                end
+        end)
+
+        if exists then
+                http.write_json({ status = "exists", section = exists })
+                return
+        end
+
+        local section = uci:add("relaywatch", "candidate")
+        if not section then
+                http.write_json({ status = "fail", message = "uci-add-failed" })
+                return
+        end
+
+        uci:set("relaywatch", section, "ssid", ssid)
+        if bssid ~= "" then
+                uci:set("relaywatch", section, "bssid", bssid)
+        end
+        uci:set("relaywatch", section, "encryption", encryption)
+        if priority == "" then
+                priority = "10"
+        end
+        uci:set("relaywatch", section, "priority", priority)
+
+        uci:commit("relaywatch")
+
+        local needs_key = encryption ~= "none" and encryption ~= ""
+
+        http.write_json({
+                status = "ok",
+                section = section,
+                needs_key = needs_key,
+                ssid = ssid,
+                encryption = encryption
+        })
 end
 
 -- 汇总状态文件与日志尾部，供前端刷新状态
