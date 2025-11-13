@@ -194,12 +194,14 @@ jobs:
           mkdir -p "$SDK_DIR/package/network/services/relaywatch"
           rsync -a --delete package/network/services/relaywatch/ "$SDK_DIR/package/network/services/relaywatch/"
           pushd "$SDK_DIR" >/dev/null
-          ./scripts/feeds update -a
+          cp feeds.conf.default feeds.conf
+          sed -i '/telephony/d' feeds.conf
+          FEEDS_CONF=feeds.conf ./scripts/feeds update -a
           popd >/dev/null
           mkdir -p "$SDK_DIR/feeds/luci/applications"
           rsync -a --delete feeds/luci/applications/luci-app-relaywatch/ "$SDK_DIR/feeds/luci/applications/luci-app-relaywatch/"
           pushd "$SDK_DIR" >/dev/null
-          ./scripts/feeds install -a
+          FEEDS_CONF=feeds.conf ./scripts/feeds install -a
           ./scripts/feeds uninstall luci-app-relaywatch || true
           ./scripts/feeds install -p luci luci-app-relaywatch || ./scripts/feeds install luci-app-relaywatch || true
           mkdir -p package/feeds/luci
