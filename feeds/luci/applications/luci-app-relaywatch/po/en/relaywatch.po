@@ -204,6 +204,48 @@ msgstr "Switch request queued."
 msgid "Trigger Immediate Check"
 msgstr "Trigger Immediate Check"
 
+msgid "Wireless Interface"
+msgstr "Wireless Interface"
+
+msgid "Noise"
+msgstr "Noise"
+
+msgid "Bit Rate"
+msgstr "Bit Rate"
+
+msgid "Link Quality"
+msgstr "Link Quality"
+
+msgid "Failure Rounds"
+msgstr "Failure Rounds"
+
+msgid "Next Switch Window"
+msgstr "Next Switch Window"
+
+msgid "Cooldown Remaining"
+msgstr "Cooldown Remaining"
+
+msgid "Import"
+msgstr "Import"
+
+msgid "Missing SSID information from scan result."
+msgstr "Missing SSID information from scan result."
+
+msgid "Import request failed."
+msgstr "Import request failed."
+
+msgid "Candidate already exists."
+msgstr "Candidate already exists."
+
+msgid "Candidate imported. Please review the entry on the Candidates tab."
+msgstr "Candidate imported. Please review the entry on the Candidates tab."
+
+msgid "Remember to fill in the password for secured networks."
+msgstr "Remember to fill in the password for secured networks."
+
+msgid "Not scheduled"
+msgstr "Not scheduled"
+
 msgid "Updated At"
 msgstr "Updated At"
 
