@@ -1,0 +1,13 @@
+{
+  "targets": [
+    "x86/64",
+    "armvirt/64",
+    "mediatek/filogic",
+    "ramips/mt7621",
+    "ath79/nand"
+  ],
+  "openwrt_versions": [
+    "23.05.2",
+    "22.03.5"
+  ]
+}

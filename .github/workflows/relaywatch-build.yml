@@ -29,6 +29,9 @@ jobs:
     outputs:
       matrix: ${{ steps.compute.outputs.matrix }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: 生成矩阵配置
         id: compute
         shell: bash
@@ -37,10 +40,27 @@ jobs:
           matrix_json=$(python3 - <<'PY'
           import json
           import os
+          import sys
           from pathlib import Path
 
           DEFAULT_TARGETS = ["x86/64"]
           DEFAULT_VERSIONS = ["23.05.2", "22.03.5"]
+
+          config_targets = DEFAULT_TARGETS
+          config_versions = DEFAULT_VERSIONS
+
+          config_path = Path("ci/default-matrix.json")
+          if config_path.is_file():
+              try:
+                  config_data = json.loads(config_path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError as exc:
+                  print(f"无法解析 {config_path}: {exc}", file=sys.stderr)
+              else:
+                  targets_from_config = [str(item).strip() for item in config_data.get("targets", [])]
+                  versions_from_config = [str(item).strip() for item in config_data.get("openwrt_versions", [])]
+
+                  config_targets = [item for item in targets_from_config if item]
+                  config_versions = [item for item in versions_from_config if item]
 
           event_path = Path(os.environ.get("GITHUB_EVENT_PATH", ""))
           payload = {}
@@ -105,9 +125,9 @@ jobs:
           versions = dedupe([v for v in versions if v])
 
           if not targets:
-              targets = DEFAULT_TARGETS
+              targets = config_targets or DEFAULT_TARGETS
           if not versions:
-              versions = DEFAULT_VERSIONS
+              versions = config_versions or DEFAULT_VERSIONS
 
           matrix = {"openwrt_version": versions, "target": targets}
           print(json.dumps(matrix))
