@@ -1,6 +1,6 @@
-# relaywatch 无线中继看门狗
+# relaywatch
 
-## 项目简介
+## 项目简介（中文）
 relaywatch 是面向 OpenWrt 的无线中继稳连解决方案，提供后台守护进程 `relaywatchd` 与 LuCI 管理界面。守护进程负责对接入网的无线 STA 接口进行健康检测、自动切换候选热点，并维持 relayd 桥接的可用性。LuCI 前端提供候选列表维护、实时状态查看与手动操作入口。
 
 ## 核心特性
@@ -63,5 +63,28 @@ feeds/luci/applications/luci-app-relaywatch/  # LuCI 前端
 - 依赖 `ubus iwinfo` 获取热点列表与关联信息，若固件未包含相应 JSON 接口将退回到基础模式，状态页可能缺失部分指标。
 - 针对多语言环境仍需在新增功能时同步维护 `po` 文本，以保持界面一致性。
 
-## 许可证
-本项目以 GPL-3.0-or-later 授权发布。
+## Project Overview (English)
+relaywatch is an OpenWrt-oriented solution that keeps wireless relay connections healthy. It ships a background daemon `relaywatchd` to monitor uplink status and automatically failover between predefined candidates, plus a LuCI interface for configuration, manual actions, and observability. The daemon works with relayd and the wireless STA interface, maintaining state files and logs for troubleshooting.
+
+### Key Features
+- Multi-strategy health checks (Ping/HTTP) with prioritized combinations.
+- Automatic switching with blacklist and exponential backoff to avoid oscillation.
+- Visibility validation via `ubus iwinfo` before attempting to associate with a target.
+- State exposure through `/var/run/relaywatch/state.json` and `/var/log/relaywatch.log`, rendered on the LuCI status page.
+- Wireless hotplug integration to react quickly to association or disconnection events.
+- One-click candidate import from scan results in the LuCI status page.
+
+### Repository Layout
+- `package/network/services/relaywatch/`: daemon scripts and default configuration.
+- `feeds/luci/applications/luci-app-relaywatch/`: LuCI front-end implementation.
+- `.cursor/plans/l-82b8a035.plan.md`: project plan and progress tracking.
+
+### Getting Started
+1. Place the repository under the OpenWrt source tree (same paths as above).
+2. Run `./scripts/feeds update -a && ./scripts/feeds install luci-app-relaywatch` to ensure dependencies.
+3. Enable `Network -> relaywatch` and `LuCI -> Applications -> luci-app-relaywatch` in menuconfig.
+4. Build IPKs with `make package/relaywatch/compile V=s` and `make package/luci-app-relaywatch/compile V=s`.
+5. Transfer the packages to the device and install via `opkg install *.ipk`.
+
+### License
+GPL-3.0-or-later
