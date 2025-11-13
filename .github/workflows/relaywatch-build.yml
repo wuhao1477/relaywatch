@@ -165,16 +165,55 @@ jobs:
           BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${ARCH_DIR}/${SUBTARGET}"
           export BASE_URL
           SDK_TARBALL=$(python3 - <<'PY'
-          import os, sys, urllib.request
+          import os
+          import sys
+          from urllib import error, request
+
           base = os.environ["BASE_URL"]
-          with urllib.request.urlopen(base + "/") as resp:
-              html = resp.read().decode()
-          for token in html.split('"'):
-              if token.startswith("openwrt-sdk") and token.endswith(".tar.xz"):
-                  print(token)
+
+          def find_from_sha256sums():
+              manifest_url = base.rstrip("/") + "/sha256sums"
+              try:
+                  with request.urlopen(manifest_url) as resp:
+                      content = resp.read().decode()
+              except error.HTTPError as exc:
+                  if exc.code != 404:
+                      raise
+                  return None
+              except OSError:
+                  return None
+
+              for line in content.splitlines():
+                  line = line.strip()
+                  if not line:
+                      continue
+                  parts = line.split()
+                  if not parts:
+                      continue
+                  candidate = parts[-1]
+                  if candidate.startswith("openwrt-sdk") and candidate.endswith(".tar.xz"):
+                      return candidate
+              return None
+
+          def find_from_directory_listing():
+              try:
+                  with request.urlopen(base.rstrip("/") + "/") as resp:
+                      html = resp.read().decode()
+              except OSError:
+                  return None
+
+              for token in html.split('"'):
+                  if token.startswith("openwrt-sdk") and token.endswith(".tar.xz"):
+                      return token
+              return None
+
+          for finder in (find_from_sha256sums, find_from_directory_listing):
+              tarball = finder()
+              if tarball:
+                  print(tarball)
                   break
           else:
-              sys.exit("No SDK tarball found")
+              sys.exit("No SDK tarball found under " + base)
           PY
           )
           if [ -z "$SDK_TARBALL" ]; then
