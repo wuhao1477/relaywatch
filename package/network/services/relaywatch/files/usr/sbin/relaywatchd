@@ -11,7 +11,6 @@ UBOX_PREFIX="${RELAYWATCHD_UBOX_PREFIX:-/usr/share/libubox}"
 . "${LIB_PREFIX}/functions.sh"
 . "${LIB_PREFIX}/functions/network.sh"
 . "${UBOX_PREFIX}/jshn.sh"
-
 # 定义运行时状态目录以及关键状态文件
 STATE_DIR="/var/run/relaywatch"
 STATE_FILE="$STATE_DIR/state.json"
@@ -200,7 +199,6 @@ write_state() {
         local message="$2"
         local now
         now=$(date +%s)
-
         collect_runtime_metrics
 
         json_init
