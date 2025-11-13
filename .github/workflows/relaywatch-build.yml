@@ -194,6 +194,8 @@ jobs:
           mkdir -p "$SDK_DIR/package/network/services/relaywatch"
           rsync -a --delete package/network/services/relaywatch/ "$SDK_DIR/package/network/services/relaywatch/"
           pushd "$SDK_DIR" >/dev/null
+          cp feeds.conf.default feeds.conf
+          sed -i '/telephony/d' feeds.conf
           ./scripts/feeds update -a
           popd >/dev/null
           mkdir -p "$SDK_DIR/feeds/luci/applications"
